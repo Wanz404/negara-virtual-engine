@@ -1,0 +1,35 @@
+{
+  "name": "negara-virtual",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b",
+    "db:seed": "tsx scripts/generate-seed.ts",
+    "test:db": "tsx scripts/test-db.ts",
+    "db:bundle": "npm run db:seed && node scripts/bundle-sql.mjs",
+    "deploy:pilot": "node scripts/deploy-world.mjs republik-konoha",
+    "deploy:world": "node scripts/deploy-world.mjs",
+    "deploy:all": "node scripts/deploy-world.mjs --all"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.58.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.3.0",
+    "@tailwindcss/vite": "^4.1.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "tailwindcss": "^4.1.0",
+    "tsx": "^4.20.0",
+    "typescript": "~5.9.0",
+    "vite": "^7.1.0"
+  }
+}

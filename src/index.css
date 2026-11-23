@@ -1,0 +1,119 @@
+@import 'tailwindcss';
+
+/* Token warna diisi runtime dari WORLD.theme (lihat main.tsx) */
+:root {
+  --w-primary: #dc2626;
+  --w-accent: #facc15;
+  --w-bg: #fef7ec;
+  --w-surface: #ffffff;
+  --w-text: #1f2937;
+  --w-muted: #6b7280;
+  --w-ground: #bbf7d0;
+  --w-road: #94a3b8;
+}
+
+@theme inline {
+  --color-brand: var(--w-primary);
+  --color-accent: var(--w-accent);
+  --color-bg: var(--w-bg);
+  --color-surface: var(--w-surface);
+  --color-ink: var(--w-text);
+  --color-muted: var(--w-muted);
+  --color-ground: var(--w-ground);
+  --color-road: var(--w-road);
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--w-bg);
+  color: var(--w-text);
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
+button {
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+@keyframes ticker {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes stamp-in {
+  0% {
+    transform: scale(2.4) rotate(-18deg);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(0.92) rotate(-10deg);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1) rotate(-12deg);
+    opacity: 1;
+  }
+}
+
+@keyframes float-up {
+  0% {
+    transform: translate(-50%, 0);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -60px);
+    opacity: 0;
+  }
+}
+
+@keyframes wander {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  25% {
+    transform: translate(10px, -6px);
+  }
+  50% {
+    transform: translate(-6px, 4px);
+  }
+  75% {
+    transform: translate(6px, 8px);
+  }
+}
+
+.animate-ticker {
+  animation: ticker 40s linear infinite;
+}
+.animate-stamp {
+  animation: stamp-in 0.55s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+.animate-float-up {
+  animation: float-up 1.4s ease-out forwards;
+}
+.animate-wander {
+  animation: wander 7s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-ticker,
+  .animate-wander {
+    animation: none;
+  }
+}
