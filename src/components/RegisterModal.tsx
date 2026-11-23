@@ -36,6 +36,8 @@ export function RegisterModal({
   const [color, setColor] = useState(reg.avatarColors[0]);
   const [accessory, setAccessory] = useState<Accessory>('none');
   const [token, setToken] = useState<string | null>(null);
+  // Token Turnstile sekali pakai: remount widget setelah tiap percobaan agar dapat token baru.
+  const [turnstileKey, setTurnstileKey] = useState(0);
   const [gateOpen, setGateOpen] = useState(!reg.softGateFollow);
   const [gateCountdown, setGateCountdown] = useState<number | null>(null);
   const [touched, setTouched] = useState(false);
@@ -78,6 +80,8 @@ export function RegisterModal({
       onRegistered(result);
     } catch (err) {
       setServerError(errorMessage(err));
+      setToken(null);
+      setTurnstileKey((k) => k + 1);
     } finally {
       setSubmitting(false);
     }
@@ -177,7 +181,7 @@ export function RegisterModal({
           KTP-mu bisa langsung dilihat setelah username Instagram disimpan.
         </p>
 
-        {turnstileRequired && <Turnstile siteKey={turnstileSiteKey} onToken={setToken} />}
+        {turnstileRequired && <Turnstile key={turnstileKey} siteKey={turnstileSiteKey} onToken={setToken} />}
 
         {serverError && <div className="rounded-2xl bg-red-50 p-3 text-sm font-semibold text-red-700">{serverError}</div>}
 

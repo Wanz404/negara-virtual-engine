@@ -30,15 +30,20 @@ async function sha256Hex(input: string): Promise<string> {
     .join('');
 }
 
-async function verifyTurnstile(secret: string, token: string, ip: string | null): Promise<boolean> {
+/** Hasil siteverify + kode error Cloudflare (tidak rahasia, mis. "timeout-or-duplicate") untuk diagnosa. */
+async function verifyTurnstile(secret: string, token: string): Promise<{ ok: boolean; codes: string[]; hostname?: string }> {
   const form = new FormData();
   form.append('secret', secret);
   form.append('response', token);
-  if (ip) form.append('remoteip', ip);
   const res = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', { method: 'POST', body: form });
-  if (!res.ok) return false;
-  const data = (await res.json()) as { success?: boolean };
-  return data.success === true;
+  let data: { success?: boolean; 'error-codes'?: string[]; hostname?: string } = {};
+  try {
+    data = await res.json();
+  } catch {
+    // body bukan JSON
+  }
+  const codes = data['error-codes']?.length ? data['error-codes'] : res.ok ? [] : [`http-${res.status}`];
+  return { ok: res.ok && data.success === true, codes, hostname: data.hostname };
 }
 
 Deno.serve(async (req: Request) => {
@@ -75,13 +80,25 @@ Deno.serve(async (req: Request) => {
   if (turnstileSecrets.length > 0) {
     if (!turnstileToken) return json({ error: 'Verifikasi anti-bot belum selesai. Coba lagi.' }, 400);
     let ok = false;
+    const codes: string[] = [];
     for (const secret of turnstileSecrets) {
-      if (await verifyTurnstile(secret, turnstileToken, ip)) {
+      const r = await verifyTurnstile(secret, turnstileToken);
+      if (r.ok) {
         ok = true;
         break;
       }
+      codes.push(...r.codes);
     }
-    if (!ok) return json({ error: 'Verifikasi anti-bot gagal. Muat ulang halaman lalu coba lagi.' }, 403);
+    if (!ok) {
+      const uniq = [...new Set(codes)];
+      console.error('turnstile siteverify failed', uniq.join(','));
+      const hint = uniq.includes('invalid-input-secret')
+        ? ' (server: secret key Turnstile tidak valid)'
+        : uniq.includes('timeout-or-duplicate')
+          ? ' (token kedaluwarsa/terpakai)'
+          : '';
+      return json({ error: `Verifikasi anti-bot gagal${hint}. Coba lagi.`, codes: uniq }, 403);
+    }
   }
 
   const salt = Deno.env.get('IP_HASH_SALT') ?? 'negara-virtual';
