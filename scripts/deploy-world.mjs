@@ -64,6 +64,18 @@ function run(cmd, args, env, capture = false) {
   return { code: res.status ?? 1, out: `${res.stdout ?? ''}\n${res.stderr ?? ''}` };
 }
 
+/** Wrangler versi baru bisa menulis wrangler.jsonc / mengubah vite.config.ts. Hentikan bila itu terjadi. */
+function assertUntouched() {
+  const touched = ['wrangler.jsonc', 'wrangler.toml', 'wrangler.json'].filter((f) => existsSync(join(root, f)));
+  const vite = readFileSync(join(root, 'vite.config.ts'), 'utf8');
+  if (touched.length || vite.includes('@cloudflare/vite-plugin')) {
+    fail(
+      `Wrangler mengubah file proyek (${[...touched, vite.includes('@cloudflare/vite-plugin') ? 'vite.config.ts' : ''].filter(Boolean).join(', ')}). ` +
+        'Kembalikan dengan `git checkout -- . && git clean -f wrangler.jsonc`, lalu ulangi.',
+    );
+  }
+}
+
 function configDomain(worldId) {
   const file = join(root, 'src', 'configs', 'worlds', `${worldId}.ts`);
   const m = /domain:\s*'([^']+)'/.exec(readFileSync(file, 'utf8'));
@@ -119,7 +131,10 @@ for (const worldId of worlds) {
   if (!js.includes(buildEnv.VITE_SUPABASE_URL)) fail(`Bundle ${worldId} tidak memuat URL Supabase → akan jalan di Mode Sandbox. Deploy dibatalkan.`);
 
   // 3) Pastikan proyek Pages ada (buat bila belum)
-  const c = run('npx', ['-y', WRANGLER, 'pages', 'project', 'create', project, '--production-branch=main'], {}, true);
+  // --force: buat di Cloudflare Pages klasik (*.pages.dev + _redirects). Tanpa itu Wrangler 4.16x mengalihkan ke
+  // "Pages di atas Workers" yang mengubah vite.config/package.json otomatis & menolak _redirects SPA.
+  const c = run('npx', ['-y', WRANGLER, 'pages', 'project', 'create', project, '--production-branch=main', '--force'], {}, true);
+  assertUntouched();
   if (c.code !== 0 && !/already exists|8000002/i.test(c.out)) {
     if (/not logged in|authentication|login|CLOUDFLARE_API_TOKEN/i.test(c.out))
       fail('Wrangler belum login. Jalankan `npx wrangler login` di terminal (setujui di browser), atau set CLOUDFLARE_API_TOKEN.');
@@ -128,6 +143,7 @@ for (const worldId of worlds) {
 
   // 4) Deploy
   const d = run('npx', ['-y', WRANGLER, 'pages', 'deploy', 'dist', `--project-name=${project}`, '--branch=main', '--commit-dirty=true'], {}, true);
+  assertUntouched();
   if (d.code !== 0) fail(`Deploy ${worldId} gagal.`);
   const urls = [...new Set(d.out.match(/https:\/\/[a-z0-9.-]+\.pages\.dev/gi) ?? [])];
   results.push({ worldId, project, expected, urls });
