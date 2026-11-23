@@ -449,7 +449,18 @@ export default function App() {
       <RegisterModal open={modal === 'register'} onClose={() => setModal(null)} onRegistered={onRegistered} onOpenRecover={() => setModal('recover')} />
       <RecoverModal open={modal === 'recover'} onClose={() => setModal(null)} onRecovered={onRecovered} />
       <NewsPanel open={modal === 'news'} onClose={() => setModal(null)} news={news} world={world} />
-      <Leaderboard open={modal === 'leaderboard'} onClose={() => setModal(null)} me={me} onLocate={locateFromList} />
+      <Leaderboard
+        open={modal === 'leaderboard'}
+        onClose={() => setModal(null)}
+        me={me}
+        world={world}
+        knownCitizens={mapCitizens}
+        onLocate={locateFromList}
+        onRegister={() => {
+          unlockAudio();
+          setModal('register');
+        }}
+      />
       <GovernancePanel
         open={modal === 'gov'}
         onClose={() => setModal(null)}
