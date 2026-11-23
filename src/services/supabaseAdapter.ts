@@ -263,6 +263,17 @@ export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapter
       return { verified: r.verified, notFollowing: r.not_following, unfollowed: r.unfollowed, syncedAt: r.synced_at };
     },
 
+    async adminReportFollowChecks(secret, followers, notFollowers, totalFollowers) {
+      const r = await rpc('report_follow_checks', {
+        p_world_id: W,
+        p_admin_secret: secret,
+        p_followers: followers,
+        p_not_followers: notFollowers,
+        p_total_ig_followers: totalFollowers,
+      });
+      return { verified: r.verified, notFollowing: r.not_following };
+    },
+
     async adminImpeach(secret) {
       const r = await rpc('impeach_unverified_elites', { p_world_id: W, p_admin_secret: secret });
       return {

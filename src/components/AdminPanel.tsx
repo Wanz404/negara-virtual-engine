@@ -53,6 +53,7 @@ export function AdminPanel({
   const [parsed, setParsed] = useState<ParsedFollowers | null>(null);
   const [total, setTotal] = useState('');
   const [fullList, setFullList] = useState(false);
+  const [mode, setMode] = useState<'partial' | 'full'>('partial');
   const [log, setLog] = useState<string[]>([]);
 
   const addLog = (line: string) => setLog((l) => [`${new Date().toLocaleTimeString('id-ID')} — ${line}`, ...l].slice(0, 30));
@@ -102,7 +103,11 @@ export function AdminPanel({
     }
     const p = parseFollowersInput(text);
     setParsed(p);
-    setTotal(String(p.usernames.length));
+    // Ekspor resmi Meta = daftar lengkap; tempelan teks dianggap SEBAGIAN (aman untuk warga lain).
+    const full = p.format === 'meta-json';
+    setMode(full ? 'full' : 'partial');
+    setTotal(full ? String(p.usernames.length) : '');
+    if (!full) setFullList(false);
   }
 
   async function onFile(file: File | undefined) {
@@ -115,12 +120,19 @@ export function AdminPanel({
   async function verify() {
     if (!parsed) return;
     await run('verify', async () => {
+      const totalNum = total.trim() ? Math.max(0, Math.floor(Number(total))) : null;
+      if (mode === 'partial') {
+        const r = await api.adminReportFollowChecks(secret, parsed.usernames, [], totalNum);
+        addLog(`✅ Mode sebagian: ${r.verified} dilantik • warga lain tidak diubah`);
+        toast(`${r.verified} warga resmi dilantik (warga lain tidak diubah).`, 'success');
+        onWorld();
+        return;
+      }
       const queue = await api.adminGetFollowQueue(secret);
       const followerSet = new Set(parsed.usernames);
       // Kirim hanya irisan antrean ∩ followers (payload kecil walau followers 100rb+),
       // kecuali mode "daftar lengkap" yang perlu seluruh daftar untuk deteksi unfollow.
       const payload = fullList ? parsed.usernames : queue.usernames.filter((u) => followerSet.has(u));
-      const totalNum = total.trim() ? Math.max(0, Math.floor(Number(total))) : null;
       const r = await api.adminBatchVerify(secret, payload, totalNum, queue.snapshotAt, fullList);
       addLog(
         `✅ Verifikasi: ${r.verified} dilantik, ${r.notFollowing} belum follow${fullList ? `, ${r.unfollowed} unfollow` : ''} • antrean ${queue.usernames.length}`,
@@ -215,15 +227,34 @@ export function AdminPanel({
                   Terdeteksi <b>{formatNumber(parsed.usernames.length)}</b> username • format: {parsed.format}
                 </div>
                 <div className="grid grid-cols-2 items-center gap-2">
-                  <span className="text-muted">Total followers (HUD)</span>
+                  <span className="text-muted">Total followers (HUD){mode === 'partial' ? ' — kosongkan = tidak diubah' : ''}</span>
                   <input className={inputClass} inputMode="numeric" value={total} onChange={(e) => setTotal(e.target.value.replace(/\D/g, ''))} />
                 </div>
-                <label className="flex items-start gap-2">
-                  <input type="checkbox" className="mt-0.5" checked={fullList} onChange={(e) => setFullList(e.target.checked)} />
-                  <span>
-                    Ini daftar followers <b>LENGKAP</b> — turunkan warga terverifikasi yang sudah unfollow ke "Belum Follow".
-                  </span>
-                </label>
+                <div className="space-y-1.5 rounded-xl bg-white p-2">
+                  <label className="flex items-start gap-2">
+                    <input type="radio" name="sync-mode" className="mt-0.5" checked={mode === 'partial'} onChange={() => setMode('partial')} />
+                    <span>
+                      <b>Sebagian (aman)</b> — hanya lantik username di daftar ini. Warga lain <b>tidak diubah</b>.
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-2">
+                    <input type="radio" name="sync-mode" className="mt-0.5" checked={mode === 'full'} onChange={() => setMode('full')} />
+                    <span>
+                      <b>Lengkap</b> (ekspor followers Meta) — warga antrean yang <b>tidak ada</b> di daftar ditandai "Belum Follow".
+                    </span>
+                  </label>
+                  {mode === 'full' && (
+                    <>
+                      <p className="rounded-lg bg-amber-50 p-1.5 font-semibold text-amber-800">
+                        Pakai hanya untuk daftar followers utuh. Daftar parsial akan salah menandai warga lain sebagai warga gelap.
+                      </p>
+                      <label className="flex items-start gap-2">
+                        <input type="checkbox" className="mt-0.5" checked={fullList} onChange={(e) => setFullList(e.target.checked)} />
+                        <span>Turunkan juga warga terverifikasi yang sudah unfollow.</span>
+                      </label>
+                    </>
+                  )}
+                </div>
                 <Button className="w-full" loading={busy === 'verify'} disabled={parsed.usernames.length === 0} onClick={() => void verify()}>
                   Verifikasi Sekarang
                 </Button>

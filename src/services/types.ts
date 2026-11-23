@@ -249,6 +249,8 @@ export interface NationApi {
   adminUpdateWorld(secret: string, patch: WorldUpdatePatch): Promise<WorldState>;
   adminGetFollowQueue(secret: string): Promise<FollowQueue>;
   adminBatchVerify(secret: string, followerUsernames: string[], totalFollowers: number | null, snapshotAt: string | null, markUnfollowers?: boolean): Promise<BatchVerifyResult>;
+  /** Mode sebagian: lantik username di `followers`, tandai `notFollowers`; warga lain TIDAK diubah. */
+  adminReportFollowChecks(secret: string, followers: string[], notFollowers: string[], totalFollowers: number | null): Promise<{ verified: number; notFollowing: number }>;
   adminImpeach(secret: string): Promise<ImpeachResult>;
   adminRestoreCitizen(secret: string, citizenId: string): Promise<void>;
   adminCreatePoll(secret: string, question: string, options: string[], kind: 'policy' | 'project'): Promise<Poll>;

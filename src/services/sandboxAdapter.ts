@@ -849,6 +849,34 @@ export function createSandboxAdapter(config: WorldConfig): SandboxApi {
         return batchVerify(db, list, total, snapshotAt, markUnfollowers);
       }),
 
+    adminReportFollowChecks: (secret, followers, notFollowers, totalFollowers) =>
+      tx((db) => {
+        adminOk(secret, true);
+        const yes = new Set(followers.map(normalizeIgUsername).filter(Boolean));
+        const no = new Set(notFollowers.map(normalizeIgUsername).filter((u) => u && !yes.has(u)));
+        const t = nowIso();
+        let verified = 0;
+        let notFollowing = 0;
+        for (const c of db.citizens) {
+          if (['pending', 'recheck_requested', 'not_following'].includes(c.followStatus) && yes.has(c.igUsername)) {
+            c.followStatus = 'verified';
+            c.followCheckedAt = t;
+            verified++;
+            if (c.citizenNumber <= 30) news(db, c.id, 'verification', `RESMI DILANTIK! ${tagOf(c)} — ${c.roleTitle}`);
+          } else if (['pending', 'recheck_requested'].includes(c.followStatus) && no.has(c.igUsername)) {
+            c.followStatus = 'not_following';
+            c.followCheckedAt = t;
+            notFollowing++;
+          }
+        }
+        if (totalFollowers !== null) {
+          db.world.igFollowerCount = totalFollowers;
+          db.world.followersSyncedAt = t;
+        }
+        if (verified > 0) news(db, null, 'verification', `PELANTIKAN: ${verified} warga resmi dilantik setelah verifikasi follow @${config.igAccountHandle}!`);
+        return { verified, notFollowing };
+      }),
+
     adminImpeach: (secret) =>
       tx((db) => {
         adminOk(secret);
