@@ -319,6 +319,8 @@ export interface NationApi {
   getLeaderboard(tab: LeaderboardTab, offset: number, limit: number, search?: string): Promise<LeaderboardRow[]>;
   getMyRanks(citizenId: string): Promise<MyRanks>;
   getProjectTopDonors(projectId: string, limit?: number): Promise<DonorRow[]>;
+  /** Anggota 1 tier (cth. Daftar Naga = 'elite') urut nomor kursi, dari tier_id di DB. */
+  getTierMembers(tierId: string, limit?: number): Promise<PublicCitizen[]>;
   getActivePolls(session?: Session | null): Promise<Poll[]>;
 
   // --- Pendaftaran & sesi ---

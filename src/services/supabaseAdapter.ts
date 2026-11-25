@@ -220,6 +220,11 @@ export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapter
       return (data ?? []).map(mapDonor);
     },
 
+    async getTierMembers(tierId, limit = 50) {
+      const data = await rpc<any[]>('get_tier_members', { p_world_id: W, p_tier_id: tierId, p_limit: limit });
+      return (data ?? []).map(mapCitizen);
+    },
+
     async getActivePolls(session) {
       const data = await rpc<any[]>('get_active_polls', {
         p_world_id: W,

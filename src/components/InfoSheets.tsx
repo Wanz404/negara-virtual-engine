@@ -95,9 +95,18 @@ export function LandmarkSheet({
 }) {
   const lm = WORLD.landmarks.find((l) => l.id === landmarkId) ?? null;
   const [donors, setDonors] = useState<DonorRow[]>([]);
+  const [nagas, setNagas] = useState<PublicCitizen[] | null>(null);
   const [amount, setAmount] = useState('');
   const [busy, setBusy] = useState(false);
   const project = WORLD.projects.find((p) => p.id === world?.activeProjectId);
+
+  // Daftar Naga: dibaca dari tier_id di DB (bukan rentang nomor kursi) — 1 RPC ringan saat popup dibuka.
+  const eliteTier = WORLD.tiers.find((t) => t.preset === 'elite');
+  useEffect(() => {
+    if (lm?.kind !== 'elite_complex' || !eliteTier) return;
+    setNagas(null);
+    api.getTierMembers(eliteTier.id, 100).then(setNagas).catch(() => setNagas([]));
+  }, [lm?.kind, eliteTier]);
 
   useEffect(() => {
     if (lm?.kind !== 'project_site' || !project) return;
@@ -128,7 +137,30 @@ export function LandmarkSheet({
         </div>
       )}
       {lm.kind === 'parliament' && <p className="text-sm text-muted">Kursi #031–#060. Rapat sedang berlangsung… atau mungkin semua sedang tidur. 😴</p>}
-      {lm.kind === 'elite_complex' && <p className="text-sm text-muted">Kawasan elit #061–#100. Diskon beli kavling khusus penghuni kompleks ini.</p>}
+      {lm.kind === 'elite_complex' && (
+        <div className="space-y-2">
+          <p className="text-sm text-muted">Kawasan elit para {eliteTier?.name ?? 'Konglomerat'}. Diskon beli kavling khusus penghuni kompleks ini.</p>
+          <div className="text-xs font-black text-muted uppercase">
+            🐉 Daftar Naga{nagas && nagas.length > 0 ? ` · ${nagas.length} anggota` : ''}
+          </div>
+          {nagas === null ? (
+            <p className="text-xs text-muted">Memuat daftar…</p>
+          ) : nagas.length === 0 ? (
+            <p className="text-xs text-muted">Belum ada anggota.</p>
+          ) : (
+            <ol className="max-h-72 space-y-1 overflow-y-auto pr-1 text-sm">
+              {nagas.map((c) => (
+                <li key={c.id} className="flex items-center justify-between gap-2 rounded-xl bg-black/5 px-3 py-1.5">
+                  <span className="min-w-0 truncate">
+                    <b className="tabular-nums">#{String(c.citizenNumber).padStart(4, '0')}</b> {c.username}
+                  </span>
+                  <span className="shrink-0 truncate text-[11px] text-muted">{c.roleTitle}</span>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      )}
       {lm.kind === 'shop' && <p className="text-sm text-muted">Buka 24 jam, 7 hari seminggu, termasuk saat kiamat.</p>}
       {lm.kind === 'gate' && <p className="text-sm text-muted">Pintu masuk {WORLD.copy.nationName}. Tamu yang baru datang nongkrong di sini dulu.</p>}
       {lm.kind === 'plaza' && <p className="text-sm text-muted">Pusat kota. Tempat warga & tamu online jalan-jalan.</p>}

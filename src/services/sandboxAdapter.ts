@@ -610,6 +610,15 @@ export function createSandboxAdapter(config: WorldConfig): SandboxApi {
         return { citizenNumber: me.citizenNumber, wealthRank, landlordRank };
       }),
 
+    getTierMembers: (tierId, limit = 50) =>
+      tx((db) =>
+        db.citizens
+          .filter((c) => c.tierId === tierId)
+          .sort((a, b) => a.citizenNumber - b.citizenNumber)
+          .slice(0, limit)
+          .map(toPublic),
+      ),
+
     getProjectTopDonors: (projectId, limit = 10) =>
       tx((db) =>
         db.donations
