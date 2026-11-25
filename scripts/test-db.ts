@@ -99,7 +99,7 @@ check('ip_hash tidak bocor di respons', !('ip_hash' in c1));
 await expectError('Username IG duplikat ditolak', register('NOVI'), 'sudah terdaftar');
 await expectError('Format IG tidak valid ditolak', register('novi keren!'), 'hanya boleh');
 await expectError('IG diakhiri titik ditolak', register('novi.'), 'titik');
-await expectError('Akun resmi negara ditolak', register('@RepublikKonoha'), 'akun resmi');
+await expectError('Akun resmi negara ditolak', register('@RepublikKonoha.ofc'), 'akun resmi');
 await expectError('Kata kasar di nama ditolak', register('orangbaik', 'b4ngs4t'), 'tidak diizinkan');
 await expectError('Kata kasar di IG ditolak', register('anjjjing_lucu'), 'tidak diizinkan');
 await expectError('Karakter terlarang di nama ditolak', register('orangbaik2', '<script>'), 'karakter');

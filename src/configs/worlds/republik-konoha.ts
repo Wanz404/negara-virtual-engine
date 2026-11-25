@@ -7,7 +7,7 @@ import { building, defineWorld } from '../defineWorld';
  */
 export default defineWorld({
   worldId: 'republik-konoha',
-  igAccountHandle: 'republikkonoha',
+  igAccountHandle: 'republikkonoha.ofc',
   domain: 'republikkonoha.pages.dev',
   ktpPrefix: 'RK',
   currency: { code: 'RpK', name: 'Rupiah Konoha' },
