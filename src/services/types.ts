@@ -325,6 +325,10 @@ export interface NationApi {
   register(input: RegisterInput): Promise<RegisterResult>;
   getMe(session: Session): Promise<MyCitizen | null>;
   recoverSession(ktpCode: string, pin: string): Promise<Session>;
+  /** Masuk Cepat langkah 1: status akun dari username (IG username / nama tampilan). */
+  quickLoginCheck(username: string): Promise<QuickLoginCheck>;
+  /** Masuk Cepat langkah 2: cocokkan PIN, atau buat PIN baru bila akun belum punya. */
+  quickLogin(username: string, pin: string): Promise<{ session: Session; pinCreated: boolean }>;
   setRecoveryPin(session: Session, pin: string): Promise<void>;
 
   // --- Verifikasi follow (warga) ---
@@ -369,7 +373,8 @@ export interface NationApi {
   getGlobalChat(limit?: number): Promise<ChatMessage[]>;
   sendGlobalChat(session: Session, message: string, emoteKey?: EmoteKey | null): Promise<ChatMessage>;
   /** INSERT (pesan baru) & UPDATE (sinkron ganti nama). Mengembalikan fungsi cleanup. */
-  subscribeGlobalChat(handlers: { onInsert: (m: ChatMessage) => void; onUpdate: (m: ChatMessage) => void }): () => void;
+  /** onStatus: 'live' saat kanal Realtime tersambung, 'down' bila ditolak/putus (pemicu polling cadangan). */
+  subscribeGlobalChat(handlers: { onInsert: (m: ChatMessage) => void; onUpdate: (m: ChatMessage) => void; onStatus?: (s: 'live' | 'down') => void }): () => void;
   /** Realtime Broadcast emote (0 beban database). */
   joinEmotes(onEmote: (e: EmoteEvent) => void): EmoteChannel;
 
@@ -389,4 +394,17 @@ export class ApiError extends Error {
     super(message);
     this.name = 'ApiError';
   }
+}
+
+export type QuickLoginStatus = 'not_found' | 'ambiguous' | 'has_pin' | 'needs_pin_setup' | 'vip_protected';
+export interface QuickLoginCheck {
+  status: QuickLoginStatus;
+  citizenNumber?: number;
+  username?: string;
+  lockedMinutes?: number | null;
+}
+
+/** Normalisasi input username: trim, buang awalan @, huruf kecil. */
+export function normalizeLoginUsername(raw: string): string {
+  return raw.trim().replace(/^[\s@]+/, '').trim().toLowerCase();
 }

@@ -63,8 +63,10 @@ import {
   type PresenceIdentity,
   type PresenceMember,
   type PublicCitizen,
+  type QuickLoginCheck,
   type Session,
   type WorldState,
+  normalizeLoginUsername,
 } from './types';
 
 export const SANDBOX_ADMIN_SECRET = 'admin123';
@@ -138,6 +140,16 @@ const uid = (): string =>
       });
 
 const nowIso = (): string => new Date().toISOString();
+
+/** Sama dengan nv_quick_resolve di SQL: IG username (unik) dulu, lalu nama tampilan bila tepat 1. */
+function quickResolve(db: SbDb, raw: string): SbCitizen | 'not_found' | 'ambiguous' {
+  const q = normalizeLoginUsername(raw);
+  if (!q) return 'not_found';
+  const byIg = db.citizens.find((c) => c.igUsername === q);
+  if (byIg) return byIg;
+  const byName = db.citizens.filter((c) => c.username.toLowerCase() === q);
+  return byName.length === 1 ? byName[0] : byName.length > 1 ? 'ambiguous' : 'not_found';
+}
 
 function fail(message: string): never {
   throw new ApiError(message);
@@ -655,6 +667,34 @@ export function createSandboxAdapter(config: WorldConfig): SandboxApi {
         }
         save(db);
         return fail(left <= 0 ? 'PIN salah. KTP dikunci 1 jam.' : `PIN salah. Sisa ${left} percobaan.`);
+      }),
+
+    quickLoginCheck: (username) =>
+      tx((db) => {
+        const c = quickResolve(db, username);
+        if (typeof c === 'string') return { status: c };
+        return {
+          status: c.recoveryPin ? 'has_pin' : c.citizenNumber <= 10 ? 'vip_protected' : 'needs_pin_setup',
+          citizenNumber: c.citizenNumber,
+          username: c.username,
+          lockedMinutes: null,
+        } as QuickLoginCheck;
+      }),
+
+    quickLogin: (username, pin) =>
+      tx((db) => {
+        const c = quickResolve(db, username);
+        if (c === 'ambiguous') return fail('Ada beberapa warga dengan nama itu. Ketik username Instagram-mu.');
+        if (c === 'not_found') return fail('Username tidak ditemukan.');
+        if (!/^[0-9]{4,6}$/.test(pin)) return fail('PIN harus 4–6 digit angka.');
+        if (!c.recoveryPin) {
+          if (c.citizenNumber <= 10) return fail('Akun ini dilindungi pengaman khusus. Gunakan pemulihan akun.');
+          c.recoveryPin = pin;
+          save(db);
+          return { session: { citizenId: c.id, token: c.token }, pinCreated: true };
+        }
+        if (pin !== c.recoveryPin) return fail('PIN salah.');
+        return { session: { citizenId: c.id, token: c.token }, pinCreated: false };
       }),
 
     setRecoveryPin: (session, pin) =>
@@ -1310,7 +1350,8 @@ export function createSandboxAdapter(config: WorldConfig): SandboxApi {
       return mapChat(row as unknown as Record<string, unknown>);
     },
 
-    subscribeGlobalChat({ onInsert, onUpdate }) {
+    subscribeGlobalChat({ onInsert, onUpdate, onStatus }) {
+      onStatus?.('live');
       const handle = (msg: { type: 'insert' | 'update'; row: ChatRow }) => {
         const m = mapChat(msg.row as unknown as Record<string, unknown>);
         if (msg.type === 'insert') onInsert(m);

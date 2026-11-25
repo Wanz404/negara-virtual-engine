@@ -189,7 +189,7 @@ export function RegisterModal({
           {submitting ? 'Mencetak KTP…' : `🎲 ${WORLD.copy.registerCta} Sekarang`}
         </Button>
         <button type="button" onClick={onOpenRecover} className="w-full text-center text-xs font-semibold text-muted underline">
-          Sudah punya KTP? Masuk dengan Kode Pemulihan
+          Sudah punya KTP? Masuk pakai Username
         </button>
       </form>
     </Modal>

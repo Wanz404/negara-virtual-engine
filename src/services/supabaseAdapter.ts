@@ -9,6 +9,7 @@ import {
   type PresenceMember,
   type RegisterInput,
   type Session,
+  normalizeLoginUsername,
 } from './types';
 
 const WORLD_COLUMNS =
@@ -230,6 +231,16 @@ export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapter
       return { citizenId: r.citizen_id, token: r.secret_token };
     },
 
+    async quickLoginCheck(username) {
+      const r = await rpc('quick_login_check', { p_world_id: W, p_username: normalizeLoginUsername(username) });
+      return { status: r.status, citizenNumber: r.citizen_number ?? undefined, username: r.username ?? undefined, lockedMinutes: r.locked_minutes ?? null };
+    },
+
+    async quickLogin(username, pin) {
+      const r = await rpc('quick_login', { p_world_id: W, p_username: normalizeLoginUsername(username), p_pin: pin });
+      return { session: { citizenId: r.citizen_id, token: r.secret_token }, pinCreated: Boolean(r.pin_created) };
+    },
+
     async setRecoveryPin(session, pin) {
       await rpc('set_recovery_pin', { ...auth(session), p_pin: pin });
     },
@@ -448,7 +459,7 @@ export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapter
       return mapChat(await rpc('send_global_chat', { ...auth(session), p_message: message, p_emote_key: emoteKey }));
     },
 
-    subscribeGlobalChat({ onInsert, onUpdate }) {
+    subscribeGlobalChat({ onInsert, onUpdate, onStatus }) {
       const channel: RealtimeChannel = sb
         .channel(`gchat:${W}`)
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'global_chat_messages', filter: `world_id=eq.${W}` }, (p) =>
@@ -457,7 +468,7 @@ export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapter
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'global_chat_messages', filter: `world_id=eq.${W}` }, (p) =>
           onUpdate(mapChat(p.new as Record<string, unknown>)),
         )
-        .subscribe();
+        .subscribe((status) => onStatus?.(status === 'SUBSCRIBED' ? 'live' : 'down'));
       return () => {
         void sb.removeChannel(channel);
       };

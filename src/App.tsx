@@ -47,6 +47,9 @@ const POLL_MIN_MS = 60_000;
 const POLL_JITTER_MS = 15_000;
 const RING_STALE_MS = 5 * 60_000;
 
+/** Presence dimatikan: referensi tetap agar mapData tidak dibuat ulang (dan dikirim ke kanvas) tiap render. */
+const NO_MEMBERS: PresenceMember[] = [];
+
 const pollDelay = () => POLL_MIN_MS + Math.random() * POLL_JITTER_MS;
 
 type ModalName = 'register' | 'recover' | 'ktp' | 'status' | 'admin' | 'dev' | 'news' | 'leaderboard' | 'gov' | 'chat' | 'economy' | null;
@@ -67,7 +70,7 @@ export default function App() {
   const [lastDataSyncAt, setLastDataSyncAt] = useState<number | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [citizens, setCitizens] = useState<PublicCitizen[]>([]);
-  const members: PresenceMember[] = [];
+  const members = NO_MEMBERS;
   const [session, setSession] = useState<Session | null>(loadSession);
   const [me, setMe] = useState<MyCitizen | null>(null);
   const [myPlotCount, setMyPlotCount] = useState(0);
@@ -482,11 +485,11 @@ export default function App() {
     void refreshMap();
   }
 
-  function onRecovered(s: Session) {
+  function onRecovered(s: Session, pinCreated = false) {
     saveSession(s);
     setSession(s);
     setModal(null);
-    toast('Selamat datang kembali!', 'success');
+    toast(pinCreated ? 'PIN dibuat & KTP-mu aman. Selamat datang kembali!' : 'Selamat datang kembali!', 'success');
   }
 
   function logout() {
@@ -701,6 +704,16 @@ export default function App() {
               </Button>
             </div>
           </>
+        ) : session ? (
+          // Sesi tersimpan tapi data warga belum termuat (server lambat): JANGAN tampilkan tombol daftar,
+          // supaya warga tidak mengira akunnya hilang lalu mendaftar ulang. Sesi lokal tetap utuh.
+          <div className="space-y-2 rounded-2xl bg-black/5 p-3 text-center">
+            <div className="text-sm font-bold">⏳ Memuat KTP-mu…</div>
+            <div className="text-[11px] text-muted">Server sedang sibuk. Kamu tetap login — dicoba ulang otomatis.</div>
+            <Button variant="secondary" className="w-full text-xs" onClick={() => void refreshMe()}>
+              🔄 Coba lagi sekarang
+            </Button>
+          </div>
         ) : (
           <div className="space-y-2">
             <Button

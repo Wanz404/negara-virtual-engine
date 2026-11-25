@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
+import { forwardRef, memo, useEffect, useImperativeHandle, useRef } from 'react';
 import { WORLD, type LandmarkKind } from '../configs';
 import { MapEngine, type MapData, type TapTarget } from '../engine';
 import type { EmoteKey } from '../services/types';
@@ -20,7 +20,7 @@ export interface MapViewHandle {
  * Pembungkus tipis MapEngine. Loop render (requestAnimationFrame) hidup di engine, terisolasi dari
  * re-render React: props hanya meneruskan data lewat engine.setData().
  */
-export const MapView = forwardRef<MapViewHandle, { data: MapData; onTap: (t: TapTarget) => void; onVisibleRings: (rings: number[]) => void }>(
+export const MapView = memo(forwardRef<MapViewHandle, { data: MapData; onTap: (t: TapTarget) => void; onVisibleRings: (rings: number[]) => void }>(
   function MapView({ data, onTap, onVisibleRings }, ref) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const engineRef = useRef<MapEngine | null>(null);
@@ -58,4 +58,7 @@ export const MapView = forwardRef<MapViewHandle, { data: MapData; onTap: (t: Tap
 
     return <canvas ref={canvasRef} className="block h-full w-full touch-none select-none" aria-label={`Peta ${WORLD.copy.nationName}`} />;
   },
+  ),
+  // Callback disimpan di ref → cukup bandingkan data; ketikan chat / tik jam App tidak me-render kanvas.
+  (a, b) => a.data === b.data,
 );
