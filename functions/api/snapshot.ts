@@ -52,8 +52,6 @@ async function build(): Promise<Record<string, unknown>> {
 /** Salinan segar (10 dtk) + salinan cadangan (10 menit) + kunci refresh (20 dtk) di cache edge yang sama. */
 const STALE_TTL = 600;
 const LOCK_TTL = 20;
-let inflight: Promise<string> | null = null;
-
 function cached(body: string, ttl: number): Response {
   return new Response(body, { headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': `public, max-age=${ttl}` } });
 }
@@ -69,20 +67,11 @@ function client(body: string, state: string): Response {
   });
 }
 
-/** Satu build per isolate pada satu waktu; hasilnya ditulis ke salinan segar & cadangan. */
-function refresh(cache: Cache, freshKey: Request, staleKey: Request): Promise<string> {
-  if (!inflight) {
-    inflight = build()
-      .then(async (data) => {
-        const body = JSON.stringify(data);
-        await Promise.all([cache.put(freshKey, cached(body, EDGE_TTL)), cache.put(staleKey, cached(body, STALE_TTL))]);
-        return body;
-      })
-      .finally(() => {
-        inflight = null;
-      });
-  }
-  return inflight;
+/** Build lalu tulis ke salinan segar & cadangan. (Workers melarang berbagi promise antar-request.) */
+async function refresh(cache: Cache, freshKey: Request, staleKey: Request): Promise<string> {
+  const body = JSON.stringify(await build());
+  await Promise.all([cache.put(freshKey, cached(body, EDGE_TTL)), cache.put(staleKey, cached(body, STALE_TTL))]);
+  return body;
 }
 
 export async function onRequestGet(ctx: Ctx): Promise<Response> {
