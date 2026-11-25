@@ -130,6 +130,7 @@ export class MapEngine {
   private initialFramed = false;
   private presentation = false;
   private emotes: ActiveEmote[] = [];
+  private calloutHits: Array<{ x: number; y: number; w: number; h: number; landmarkId: string }> = [];
 
   onTap: (target: TapTarget) => void = () => {};
   onVisibleRings: (rings: number[]) => void = () => {};
@@ -514,8 +515,84 @@ export class MapEngine {
     this.drawLabels(labels);
     if (!this.presentation) this.drawCoins(t);
     else this.coinHits = [];
+    if (!this.presentation) this.drawCallouts(t);
+    else this.calloutHits = [];
     this.drawEmotes(now);
     this.drawSpotlight(now);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Callout pin melayang (v3): "🚧 STASIUN X% • PATUNGAN!" & "🏪 BELI WARUNG / KAVLING RT"
+  // ---------------------------------------------------------------------------
+  private drawCallouts(t: number): void {
+    this.calloutHits = [];
+    const w = this.data.world;
+    const items: Array<{ kind: LandmarkKind; text: string; bg: string; border: string; fg: string; phase: number }> = [];
+    if (w && !w.activeProjectCompleted) {
+      const project = this.config.projects.find((p) => p.id === w.activeProjectId);
+      const pct = w.activeProjectGoal > 0 ? (w.activeProjectFunding / w.activeProjectGoal) * 100 : 0;
+      const name = (project?.name.split(' ')[0] ?? 'PROYEK').toUpperCase();
+      const pctText = pct > 0 && pct < 1 ? pct.toFixed(1) : String(Math.floor(pct));
+      items.push({ kind: 'project_site', text: `🚧 ${name} ${pctText}% • PATUNGAN!`, bg: '#c8102e', border: '#fbbf24', fg: '#ffffff', phase: 0 });
+    }
+    items.push({ kind: 'shop', text: '🏪 BELI WARUNG / KAVLING RT', bg: '#fbbf24', border: '#ffffff', fg: '#3b1d00', phase: 1.7 });
+
+    const ctx = this.ctx;
+    const cam = this.camera;
+    const font = '900 11px ui-sans-serif, system-ui, sans-serif';
+    for (const it of items) {
+      const lm = this.config.landmarks.find((l) => l.kind === it.kind);
+      if (!lm) continue;
+      const r = this.geo.slotRect(LANDMARK_SLOTS[it.kind]);
+      const s = cam.worldToScreen(r.x + r.w / 2, r.y + r.h * 0.3);
+      const tw = this.textWidth(it.text, font);
+      const pw = tw + 20;
+      const ph = 24;
+      const bob = Math.sin(t * 2.4 + it.phase) * 3;
+      const pulse = 1 + Math.max(0, Math.sin(t * 3 + it.phase)) * 0.05;
+      const cx = s.x;
+      const cy = s.y - 18 + bob;
+      if (cx < -pw || cx > cam.width + pw || cy < -40 || cy > cam.height + 40) continue;
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(pulse, pulse);
+      // glow denyut
+      ctx.globalAlpha = 0.35 * Math.max(0, Math.sin(t * 3 + it.phase));
+      ctx.fillStyle = it.border;
+      ctx.beginPath();
+      rrect(ctx, -pw / 2 - 4, -ph / 2 - 4, pw + 8, ph + 8, 16);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.shadowColor = 'rgba(0,0,0,0.3)';
+      ctx.shadowBlur = 6;
+      ctx.shadowOffsetY = 2;
+      ctx.fillStyle = it.bg;
+      ctx.beginPath();
+      rrect(ctx, -pw / 2, -ph / 2, pw, ph, 12);
+      ctx.fill();
+      ctx.shadowColor = 'transparent';
+      // ekor penunjuk
+      ctx.beginPath();
+      ctx.moveTo(-6, ph / 2 - 1);
+      ctx.lineTo(6, ph / 2 - 1);
+      ctx.lineTo(0, ph / 2 + 7);
+      ctx.closePath();
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = it.border;
+      ctx.beginPath();
+      rrect(ctx, -pw / 2, -ph / 2, pw, ph, 12);
+      ctx.stroke();
+      ctx.fillStyle = it.fg;
+      ctx.font = font;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(it.text, 0, 1);
+      ctx.restore();
+      this.calloutHits.push({ x: cx - pw / 2 - 6, y: cy - ph / 2 - 6, w: pw + 12, h: ph + 14, landmarkId: lm.id });
+    }
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
   }
 
   // ---------------------------------------------------------------------------
@@ -850,6 +927,9 @@ export class MapEngine {
   private handleTap(sx: number, sy: number): void {
     for (const c of this.coinHits) {
       if (Math.hypot(sx - c.x, sy - c.y) <= c.r + 6) return this.onTap({ type: 'coin', plot: c.plot });
+    }
+    for (const h of this.calloutHits) {
+      if (sx >= h.x && sx <= h.x + h.w && sy >= h.y && sy <= h.y + h.h) return this.onTap({ type: 'landmark', landmarkId: h.landmarkId });
     }
     const wp = this.camera.screenToWorld(sx, sy);
     const z = this.camera.zoom;

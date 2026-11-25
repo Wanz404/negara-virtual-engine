@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { EMOTES, EMOTE_COOLDOWN_MS, EMOTE_DURATION_MS, emoteDef, isEmoteKey, preloadEmotes } from '../lib/emotes';
+import { markEmoteMissionDone } from '../lib/economy';
 import { haptic } from '../lib/fx';
 import { cleanProfileText } from '../lib/validation';
 import { api, type EmoteChannel, type EmoteEvent, type EmoteKey, type MyCitizen } from '../services';
@@ -72,6 +73,7 @@ export function useEmotes(me: MyCitizen | null, mapRef: RefObject<MapViewHandle 
       if (Date.now() - lastSentAt < EMOTE_COOLDOWN_MS) return false;
       const e: EmoteEvent = { citizen_id: me.id, seat_number: me.citizenNumber, display_name: me.username, emote_key: key, timestamp: Date.now() };
       setLastSentAt(Date.now());
+      markEmoteMissionDone(); // misi warga baru #3
       haptic(20);
       display(e, true);
       chanRef.current?.send(e);
@@ -105,13 +107,19 @@ export function EmotePicker({
   lastSentAt,
   onPick,
   onLocked,
+  openSignal = 0,
 }: {
   enabled: boolean;
   lastSentAt: number;
   onPick: (k: EmoteKey) => boolean;
   onLocked: () => void;
+  /** Naikkan angka ini untuk membuka picker dari luar (shortcut misi). */
+  openSignal?: number;
 }) {
   const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (openSignal > 0 && enabled) setOpen(true);
+  }, [openSignal, enabled]);
   const p = useCooldownProgress(lastSentAt);
   const cooling = p < 1;
   const wrapRef = useRef<HTMLDivElement>(null);

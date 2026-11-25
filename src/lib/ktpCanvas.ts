@@ -5,6 +5,7 @@
  * agar TIDAK PERNAH melewati lebar kolomnya. Semua posisi berasal dari grid tetap di bawah.
  */
 import { WORLD } from '../configs';
+import { ktpPropertyLabel } from './economy';
 import { chibiSprite } from '../engine/sprites';
 import { findTier, ringName } from './game';
 import { formatCitizenNumber, formatCoins } from './format';
@@ -442,7 +443,7 @@ export function renderKtpCanvas(me: MyCitizen, ownedPlots: number): HTMLCanvasEl
     ['ZONA', `Ring ${ring} • ${ringName(WORLD, ring)}`],
     ['WARGA SEJAK', `DAY ${me.joinedDay}`],
     ['KEKAYAAN', formatCoins(me.coins, WORLD.currency.code)],
-    ['PROPERTI', ownedPlots > 0 ? `${ownedPlots} kavling` : 'Belum punya'],
+    ['PROPERTI', ktpPropertyLabel(me, ownedPlots)],
     ['STATUS', followStatusLabel(me.followStatus)],
   ];
   fields.forEach(([k, v], i) => {

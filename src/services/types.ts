@@ -1,4 +1,7 @@
 import type { Accessory, FollowStatus } from '../configs/types';
+import type { MissionKey, PropertyType } from '../lib/economy';
+
+export type { MissionKey, PropertyType };
 
 export type ApiMode = 'supabase' | 'sandbox';
 
@@ -49,6 +52,8 @@ export interface PublicCitizen {
   lastWorkAt: string | null;
   lastActiveAt: string | null;
   createdAt: string;
+  /** Upgrade v3: nama properti tertinggi (tampil di e-KTP). */
+  topProperty?: string | null;
 }
 
 export interface MyCitizen extends PublicCitizen {
@@ -58,6 +63,14 @@ export interface MyCitizen extends PublicCitizen {
   /** Upgrade v2: terakhir ganti nama (cooldown 24 jam). Kosong jika belum pernah / DB lama. */
   nameUpdatedAt?: string | null;
   nameEditCount?: number;
+  /** Upgrade v3: ekonomi & misi (kosong di DB lama → dianggap belum pernah). */
+  lastSalaryAt?: string | null;
+  quickWorkAt?: string | null;
+  /** "YYYY-MM-DD" (WIB) */
+  quickWorkDate?: string | null;
+  quickWorkCount?: number;
+  claimedMissions?: Record<string, string>;
+  lastChatAt?: string | null;
 }
 
 export interface Session {
@@ -224,6 +237,53 @@ export interface ChatMessage {
   message: string;
   emoteKey: EmoteKey | null;
   createdAt: string;
+  /** Upgrade v3: 'system' = pengumuman (mis. donasi besar). */
+  kind: 'chat' | 'system';
+}
+
+// ---------------------------------------------------------------------------
+// Upgrade v3: Ekonomi
+// ---------------------------------------------------------------------------
+
+export interface SalaryResult {
+  reward: number;
+  base: number;
+  rankBonus: number;
+  propertyBonus: number;
+  citizen: MyCitizen;
+}
+
+export interface QuickWorkResult {
+  reward: number;
+  label: string;
+  remaining: number;
+  citizen: MyCitizen;
+}
+
+export interface MissionResult {
+  reward: number;
+  citizen: MyCitizen;
+}
+
+export interface PropertyOwnerRow {
+  citizenId: string;
+  citizenNumber: number;
+  username: string;
+  roleTitle: string;
+  propertyType: string;
+  propertyName: string;
+  emoji: string;
+  rtLabel: string;
+  purchasedAt: string;
+}
+
+export interface DonorBoardRow {
+  rank: number;
+  citizenId: string;
+  citizenNumber: number;
+  username: string;
+  roleTitle: string;
+  amount: number;
 }
 
 /** Payload ringan Supabase Realtime Broadcast (event 'citizen_emote'), tidak disimpan di DB. */
@@ -312,6 +372,16 @@ export interface NationApi {
   subscribeGlobalChat(handlers: { onInsert: (m: ChatMessage) => void; onUpdate: (m: ChatMessage) => void }): () => void;
   /** Realtime Broadcast emote (0 beban database). */
   joinEmotes(onEmote: (e: EmoteEvent) => void): EmoteChannel;
+
+  // --- Upgrade v3: Ekonomi (semua mutasi saldo lewat RPC ber-token) ---
+  claimDailySalary(session: Session): Promise<SalaryResult>;
+  doQuickWork(session: Session): Promise<QuickWorkResult>;
+  claimMission(session: Session, mission: MissionKey): Promise<MissionResult>;
+  getPropertyCatalog(): Promise<PropertyType[]>;
+  getMyProperties(citizenId: string): Promise<string[]>;
+  buyProperty(session: Session, propertyType: string): Promise<{ citizen: MyCitizen }>;
+  getPropertyOwners(limit?: number): Promise<PropertyOwnerRow[]>;
+  getDonorBoard(projectId: string, limit?: number): Promise<DonorBoardRow[]>;
 }
 
 export class ApiError extends Error {

@@ -1,9 +1,10 @@
+import type { ReactNode } from 'react';
 import { WORLD } from '../configs';
 import { formatCoins, formatNumber, formatSyncedAt } from '../lib/format';
 import type { WorldState } from '../services';
 
 /** HUD kiri atas: WARGA (max followers IG vs terdaftar) + "diperbarui …" + DAY + online. */
-export function Hud({ world, online }: { world: WorldState | null; online: number }) {
+export function Hud({ world, online, onProject, children }: { world: WorldState | null; online: number; onProject?: () => void; children?: ReactNode }) {
   const population = world ? Math.max(world.igFollowerCount, world.lastCitizenNumber) : 0;
   const project = WORLD.projects.find((p) => p.id === world?.activeProjectId);
   const pct = world && world.activeProjectGoal > 0 ? Math.min(100, (world.activeProjectFunding / world.activeProjectGoal) * 100) : 0;
@@ -31,21 +32,22 @@ export function Hud({ world, online }: { world: WorldState | null; online: numbe
       </div>
 
       {project && world && (
-        <div className="hud-panel rounded-2xl px-3.5 py-2">
+        <button type="button" onClick={onProject} className="hud-panel tactile block w-full rounded-2xl px-3.5 py-2 text-left" aria-label="Buka patungan proyek">
           <div className="flex items-center justify-between gap-2 text-[11px] font-bold">
             <span className="truncate">
               {project.emoji} {world.activeProjectCompleted ? 'Semua proyek selesai!' : project.name}
             </span>
-            <span className="text-white/70">{pct.toFixed(0)}%</span>
+            <span className="shrink-0 rounded-full bg-amber-400 px-1.5 text-[9px] font-black text-amber-950">{world.activeProjectCompleted ? `${pct.toFixed(0)}%` : 'PATUNGAN ›'}</span>
           </div>
           <div className="mt-1 h-2 overflow-hidden rounded-full bg-white/15">
             <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${pct}%` }} />
           </div>
           <div className="mt-0.5 text-[10px] text-white/70">
-            {formatCoins(world.activeProjectFunding, WORLD.currency.code)} / {formatCoins(world.activeProjectGoal, WORLD.currency.code)}
+            {formatCoins(world.activeProjectFunding, WORLD.currency.code)} / {formatCoins(world.activeProjectGoal, WORLD.currency.code)} • {pct.toFixed(pct < 10 ? 1 : 0)}%
           </div>
-        </div>
+        </button>
       )}
+      {children}
     </div>
   );
 }

@@ -98,7 +98,11 @@ export function ChatTicker({ messages, me, onOpen }: { messages: ChatMessage[]; 
         last.map((m) => (
           <div key={m.id} className="animate-chat-in flex items-center gap-1 py-px text-[11px] leading-tight">
             <SeatBadge seat={m.seatNumber} small />
-            <span className="max-w-[80px] shrink-0 truncate font-black text-amber-200">{me && m.citizenId === me.id ? me.username : m.displayName}:</span>
+            {m.kind === 'system' && <span>🏛️</span>}
+            <span className="max-w-[80px] shrink-0 truncate font-black text-amber-200">
+              {me && m.citizenId === me.id ? me.username : m.displayName}
+              {m.kind === 'system' ? '' : ':'}
+            </span>
             <span className="min-w-0 truncate text-white/95">{m.message || (m.emoteKey ? `${emoteDef(m.emoteKey).emoji} ${emoteDef(m.emoteKey).label}` : '')}</span>
           </div>
         ))
@@ -296,6 +300,23 @@ export function ChatSheet({
         {messages.map((m) => {
           const mine = !!me && m.citizenId === me.id;
           const name = mine ? me!.username : m.displayName;
+          if (m.kind === 'system') {
+            return (
+              <div key={m.id} className="animate-chat-in flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => onTapCitizen(m.citizenId)}
+                  className="flex max-w-full items-center gap-1.5 rounded-2xl bg-gradient-to-r from-amber-100 to-yellow-100 px-3 py-1.5 text-left text-[12px] leading-snug text-amber-950 ring-1 ring-amber-300"
+                >
+                  <span>🏛️</span>
+                  <SeatBadge seat={m.seatNumber} small />
+                  <span className="min-w-0">
+                    <b>{name}</b> {m.message}
+                  </span>
+                </button>
+              </div>
+            );
+          }
           return (
             <div key={m.id} className={`animate-chat-in rounded-2xl px-3 py-2 ${mine ? 'bg-amber-50 ring-1 ring-amber-200' : 'bg-black/[0.04]'}`}>
               <button type="button" className="flex w-full min-w-0 items-center gap-1.5 text-left" onClick={() => onTapCitizen(m.citizenId)}>

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { WORLD } from './configs';
 import { effectiveEconomy, findTier, nextAvailableAt } from './lib/game';
-import { formatCitizenTag, formatCoins, formatDuration } from './lib/format';
+import { formatCitizenTag, formatCoins, formatDuration, formatNumber } from './lib/format';
 import { installAudioUnlock, playCoin, unlockAudio } from './lib/fx';
 import type { MapData, TapTarget } from './engine';
 import {
@@ -29,6 +29,8 @@ import { EmotePicker, FloatingEmotes, useEmotes } from './components/Emotes';
 import { HudButton, MuteToggle } from './components/GameHud';
 import { ChatSheet, ChatTicker, useGlobalChat } from './components/GlobalChat';
 import { Hud } from './components/Hud';
+import { EconomySheet, type EconomyTab } from './components/EconomySheet';
+import { economyStatus, MISSIONS } from './lib/economy';
 import { CitizenSheet, LandmarkSheet, NewsPanel } from './components/InfoSheets';
 import { KtpModal } from './components/KtpModal';
 import { MapView, type MapViewHandle } from './components/MapView';
@@ -45,7 +47,7 @@ const POLL_WORLD_MS = 45_000;
 const POLL_MAP_MS = 60_000;
 const RING_STALE_MS = 45_000;
 
-type ModalName = 'register' | 'recover' | 'ktp' | 'status' | 'admin' | 'dev' | 'news' | 'leaderboard' | 'gov' | 'chat' | null;
+type ModalName = 'register' | 'recover' | 'ktp' | 'status' | 'admin' | 'dev' | 'news' | 'leaderboard' | 'gov' | 'chat' | 'economy' | null;
 type Sheet = { type: 'plot'; code: string } | { type: 'citizen'; id: string } | { type: 'landmark'; id: string } | null;
 
 function useNow(ms = 1000): number {
@@ -97,6 +99,27 @@ export default function App() {
   }, [chat.ready, modal, lastChatId]);
   const chatUnread = chat.messages.filter((m) => m.id > chatSeenId && m.citizenId !== me?.id).length;
   useEffect(() => installAudioUnlock(), []);
+
+  // Upgrade v3: Ekonomi & Misi
+  const [econTab, setEconTab] = useState<EconomyTab>('misi');
+  const [emoteSignal, setEmoteSignal] = useState(0);
+  const openEconomy = useCallback((tab: EconomyTab) => {
+    setSheet(null);
+    setEconTab(tab);
+    setModal('economy');
+  }, []);
+  const econStatus = me ? economyStatus(me, now) : null;
+  const econAlert = !!econStatus && (econStatus.salaryReady || econStatus.quickReady || econStatus.missionsReady > 0);
+  // Saldo naik → angka "+XX RpK" melayang dari dompet + SFX koin (semua sumber: gaji, misi, kerja, sewa).
+  const [walletFx, setWalletFx] = useState<{ id: number; amount: number } | null>(null);
+  const prevCoins = useRef<{ id: string; coins: number } | null>(null);
+  useEffect(() => {
+    const prev = prevCoins.current;
+    prevCoins.current = me ? { id: me.id, coins: me.coins } : null;
+    if (!me || !prev || prev.id !== me.id || me.coins <= prev.coins) return;
+    setWalletFx({ id: Date.now(), amount: me.coins - prev.coins });
+    playCoin();
+  }, [me?.id, me?.coins]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---------------------------------------------------------------------------
   // Data (polling ringan, hemat kuota free tier)
@@ -277,7 +300,13 @@ export default function App() {
         setSheet({ type: 'plot', code: t.plot.plotCode });
         mapRef.current?.setHighlight(t.plot.plotCode);
       } else if (t.type === 'citizen') setSheet({ type: 'citizen', id: t.citizenId });
-      else if (t.type === 'landmark') setSheet({ type: 'landmark', id: t.landmarkId });
+      else if (t.type === 'landmark') {
+        // v3: Zona Proyek → Patungan Stasiun, Warung → Properti RT; landmark lain tetap sheet info.
+        const kind = WORLD.landmarks.find((l) => l.id === t.landmarkId)?.kind;
+        if (kind === 'project_site') openEconomy('stasiun');
+        else if (kind === 'shop') openEconomy('properti');
+        else setSheet({ type: 'landmark', id: t.landmarkId });
+      }
       else if (t.type === 'guest') toast(`👋 ${t.label} sedang jalan-jalan. Ajak daftar jadi warga!`);
       else if (t.type === 'coin' && session) {
         try {
@@ -285,7 +314,6 @@ export default function App() {
           setMe((m) => (m ? { ...m, coins: r.coins } : m));
           upsertPlot({ ...t.plot, lastIncomeClaimAt: new Date().toISOString() });
           setFloatReward({ id: Date.now(), text: `+${r.total} ${WORLD.currency.code}` });
-          playCoin();
         } catch (e) {
           toast(errorMessage(e), 'error');
         }
@@ -358,7 +386,6 @@ export default function App() {
       const r = await api.claimWork(session);
       setMe({ ...me, coins: r.coins, lastWorkAt: r.lastWorkAt });
       setFloatReward({ id: Date.now(), text: `+${r.reward} ${WORLD.currency.code}` });
-      playCoin();
       toast(`${r.label}: +${formatCoins(r.reward, WORLD.currency.code)}`, 'success');
     } catch (e) {
       toast(errorMessage(e), 'error');
@@ -402,7 +429,40 @@ export default function App() {
         {/* HUD atas: statistik negara (kiri) + kolom tombol taktil (kanan). Tengah peta tetap lega. */}
         <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-2 p-3">
           <div className="pointer-events-auto max-w-[62%]">
-            <Hud world={world} online={members.length} />
+            <Hud world={world} online={members.length} onProject={() => openEconomy('stasiun')}>
+              {/* Dompet RpK: selalu terlihat di detik pertama */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => openEconomy(me ? 'kerja' : 'misi')}
+                  className="tactile flex w-full items-center gap-1.5 rounded-full border-2 border-amber-300 bg-gradient-to-b from-[#3b1d00] to-[#1c0d00] py-1 pr-3 pl-1 text-left shadow-lg"
+                  aria-label="Dompet RpK"
+                >
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-gradient-to-b from-amber-200 to-amber-500 text-sm">🪙</span>
+                  <span className="text-[15px] font-black text-amber-300 tabular-nums">{formatNumber(me?.coins ?? 0)}</span>
+                  <span className="text-[10px] font-black text-amber-100/80">{WORLD.currency.code}</span>
+                  <span className="ml-auto text-[10px] font-black text-amber-200">＋</span>
+                </button>
+                {walletFx && (
+                  <span key={walletFx.id} className="animate-wallet-gain pointer-events-none absolute top-0 left-8 text-lg font-black text-amber-300 drop-shadow-[0_2px_0_rgba(0,0,0,0.6)]">
+                    +{formatNumber(walletFx.amount)} {WORLD.currency.code}
+                  </span>
+                )}
+              </div>
+              {(!me || (econStatus && econStatus.missionsLeft > 0)) && (
+                <button
+                  type="button"
+                  onClick={() => (me ? openEconomy('misi') : (unlockAudio(), setModal('register')))}
+                  className="tactile flex w-full items-center gap-1.5 rounded-2xl bg-white/90 px-2.5 py-1.5 text-left text-[11px] font-black text-ink shadow ring-1 ring-amber-300"
+                >
+                  🎯
+                  <span className="min-w-0 flex-1 truncate">
+                    {me ? `Misi Warga Baru ${MISSIONS.length - (econStatus?.missionsLeft ?? 0)}/${MISSIONS.length}` : 'Daftar → dapat 190+ RpK'}
+                  </span>
+                  {econStatus && econStatus.missionsReady > 0 && <span className="h-2 w-2 animate-ping rounded-full bg-red-500" />}
+                </button>
+              )}
+            </Hud>
           </div>
           <div className="pointer-events-auto flex flex-col items-end gap-2.5">
             {isSandbox && (
@@ -415,6 +475,14 @@ export default function App() {
               </button>
             )}
             <MuteToggle />
+            <HudButton variant="gold" icon="💼" label="Kerja" onClick={() => openEconomy(econStatus?.missionsReady ? 'misi' : 'kerja')}>
+              {econAlert && (
+                <span className="absolute -top-1.5 -right-1.5 flex h-4 w-4">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-80" />
+                  <span className="relative inline-flex h-4 w-4 rounded-full border-2 border-white bg-red-500" />
+                </span>
+              )}
+            </HudButton>
             <HudButton icon="🏆" label="10K" onClick={() => setModal('leaderboard')} />
             <HudButton icon="🪪" label={me ? 'e-KTP' : 'Daftar'} onClick={() => (me ? setModal('ktp') : (unlockAudio(), setModal('register')))} />
             <HudButton icon="📢" label="Berita" onClick={() => setModal('news')} badge={!!world?.presidentAnnouncement} badgeTone="red" />
@@ -440,6 +508,7 @@ export default function App() {
               lastSentAt={emotes.lastSentAt}
               onPick={emotes.send}
               onLocked={() => toast('😆 Daftar jadi warga dulu untuk kirim emote ke peta!')}
+              openSignal={emoteSignal}
             />
           </div>
         </div>
@@ -522,6 +591,34 @@ export default function App() {
           unlockAudio();
           setModal('register');
         }}
+      />
+      <EconomySheet
+        open={modal === 'economy'}
+        tab={econTab}
+        onTab={setEconTab}
+        onClose={() => setModal(null)}
+        me={me}
+        session={session}
+        world={world}
+        tierWork={
+          me && tier ? { label: tier.work.label, reward: tier.work.reward, readyAt: workAt, busy: working, run: () => void work() } : null
+        }
+        onMe={onMeUpdated}
+        onWorld={(w) => {
+          setWorld(w);
+          void refreshWorld();
+        }}
+        onOpenChat={() => setModal('chat')}
+        onOpenEmote={() => {
+          setModal(null);
+          setTimeout(() => setEmoteSignal((n) => n + 1), 300);
+        }}
+        onOpenKtp={() => setModal('ktp')}
+        onRegister={() => {
+          unlockAudio();
+          setModal('register');
+        }}
+        toast={toast}
       />
       <ChatSheet
         open={modal === 'chat'}

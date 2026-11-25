@@ -36,6 +36,19 @@ import {
 } from '../lib/validation';
 import { mapChat } from './mappers';
 import {
+  DEFAULT_PROPERTY_CATALOG,
+  DONATION_ANNOUNCE_MIN,
+  MISSIONS,
+  QUICK_WORK_COOLDOWN_MS,
+  QUICK_WORK_LABELS,
+  QUICK_WORK_MAX_PER_DAY,
+  QUICK_WORK_REWARD,
+  SALARY_BASE,
+  SALARY_COOLDOWN_MS,
+  rankSalaryBonus,
+  todayWib,
+} from '../lib/economy';
+import {
   ApiError,
   type DonorRow,
   type EmoteEvent,
@@ -76,6 +89,7 @@ interface ChatRow {
   message: string;
   emote_key: EmoteKey | null;
   created_at: string;
+  kind?: 'chat' | 'system';
 }
 
 interface SbPoll {
@@ -161,6 +175,54 @@ export function createSandboxAdapter(config: WorldConfig): SandboxApi {
       // abaikan
     }
   }
+
+  /** v3: pesan sistem (pengumuman) di Global Chat. */
+  function chatSystem(c: SbCitizen, message: string): void {
+    const chat = loadChat();
+    const row: ChatRow = {
+      id: (chat[chat.length - 1]?.id ?? 0) + 1,
+      citizen_id: c.id,
+      seat_number: c.citizenNumber,
+      display_name: c.username,
+      role_title: c.roleTitle,
+      tier: c.tierId,
+      message: message.slice(0, 140),
+      emote_key: null,
+      created_at: nowIso(),
+      kind: 'system',
+    };
+    saveChat([...chat, row]);
+    chatBus({ type: 'insert', row });
+  }
+
+  // v3: kepemilikan properti katalog (disimpan terpisah agar db lama tetap kompatibel)
+  const PROP_KEY = `nv:sandbox:${config.worldId}:properties`;
+  interface SbProperty {
+    citizenId: string;
+    type: string;
+    rtLabel: string;
+    purchasedAt: string;
+  }
+  function loadProps(): SbProperty[] {
+    try {
+      const rows = JSON.parse(localStorage.getItem(PROP_KEY) ?? '[]') as SbProperty[];
+      return Array.isArray(rows) ? rows : [];
+    } catch {
+      return [];
+    }
+  }
+  function saveProps(rows: SbProperty[]): void {
+    try {
+      localStorage.setItem(PROP_KEY, JSON.stringify(rows));
+    } catch {
+      // abaikan
+    }
+  }
+  const catalog = DEFAULT_PROPERTY_CATALOG;
+  const propertyBonus = (citizenId: string) =>
+    loadProps()
+      .filter((p) => p.citizenId === citizenId)
+      .reduce((s, p) => s + (catalog.find((t) => t.id === p.type)?.dailyBonus ?? 0), 0);
   const econ = effectiveEconomy(config, 'sandbox');
   const cur = config.currency.code;
 
@@ -809,6 +871,11 @@ export function createSandboxAdapter(config: WorldConfig): SandboxApi {
           w.activeProjectFunding = funding;
         }
         w.updatedAt = nowIso();
+        // v3: pengumuman Global Chat untuk donasi besar
+        if (amt >= DONATION_ANNOUNCE_MIN) {
+          const projName = config.projects.find((p) => p.id === (done ?? w.activeProjectId))?.name ?? 'Proyek Nasional';
+          chatSystem(c, `baru saja menyumbang ${amt} ${cur} untuk ${projName}! 🏛️`);
+        }
         return { coins: c.coins, world: worldView(db), completedProjectId: done };
       }),
 
@@ -1257,6 +1324,124 @@ export function createSandboxAdapter(config: WorldConfig): SandboxApi {
         bc?.close();
         window.removeEventListener(LOCAL_CHAT_EVENT, local);
       };
+    },
+
+    // --- Upgrade v3: Ekonomi ---
+    claimDailySalary: (session) =>
+      tx((db) => {
+        const c = auth(db, session);
+        const next = c.lastSalaryAt ? new Date(c.lastSalaryAt).getTime() + SALARY_COOLDOWN_MS : 0;
+        if (next > Date.now()) fail(`Gaji hari ini sudah diambil. Tersedia lagi dalam ${formatDuration(next - Date.now())}.`);
+        const rank = rankSalaryBonus(c.citizenNumber);
+        const prop = propertyBonus(c.id);
+        const reward = SALARY_BASE + rank + prop;
+        c.coins += reward;
+        c.lastSalaryAt = nowIso();
+        c.lastActiveAt = nowIso();
+        return { reward, base: SALARY_BASE, rankBonus: rank, propertyBonus: prop, citizen: toPrivate(c) };
+      }),
+
+    doQuickWork: (session) =>
+      tx((db) => {
+        const c = auth(db, session);
+        const today = todayWib();
+        const used = c.quickWorkDate === today ? (c.quickWorkCount ?? 0) : 0;
+        if (used >= QUICK_WORK_MAX_PER_DAY) fail('Jatah Kerja Cepat hari ini habis (3/3). Balik lagi besok ya!');
+        const next = c.quickWorkAt ? new Date(c.quickWorkAt).getTime() + QUICK_WORK_COOLDOWN_MS : 0;
+        if (next > Date.now()) fail(`Masih capek habis kerja! Coba lagi dalam ${formatDuration(next - Date.now())}.`);
+        const label = QUICK_WORK_LABELS[Math.floor(Math.random() * QUICK_WORK_LABELS.length)];
+        c.coins += QUICK_WORK_REWARD;
+        c.quickWorkAt = nowIso();
+        c.quickWorkDate = today;
+        c.quickWorkCount = used + 1;
+        c.lastActiveAt = nowIso();
+        return { reward: QUICK_WORK_REWARD, label, remaining: QUICK_WORK_MAX_PER_DAY - (used + 1), citizen: toPrivate(c) };
+      }),
+
+    claimMission: (session, mission) =>
+      tx((db) => {
+        const c = auth(db, session);
+        const def = MISSIONS.find((m) => m.key === mission) ?? fail('Misi tidak dikenal.');
+        const claimed = c.claimedMissions ?? {};
+        if (mission in claimed) fail('Hadiah misi ini sudah kamu ambil.');
+        const donated = db.donations.filter((d) => d.citizenId === c.id).reduce((s, d) => s + d.amount, 0);
+        const done =
+          mission === 'first_salary'
+            ? !!c.lastSalaryAt
+            : mission === 'first_chat'
+              ? !!c.lastChatAt
+              : mission === 'first_donation'
+                ? donated >= 10
+                : true;
+        if (!done) fail('Misi belum selesai.');
+        c.coins += def.reward;
+        c.claimedMissions = { ...claimed, [mission]: nowIso() };
+        c.lastActiveAt = nowIso();
+        return { reward: def.reward, citizen: toPrivate(c) };
+      }),
+
+    getPropertyCatalog: async () => structuredClone(catalog),
+
+    getMyProperties: async (citizenId) =>
+      loadProps()
+        .filter((p) => p.citizenId === citizenId)
+        .map((p) => p.type),
+
+    buyProperty: (session, propertyType) =>
+      tx((db) => {
+        const c = auth(db, session);
+        requireVerified(c, 'buyLand');
+        const t = catalog.find((x) => x.id === propertyType) ?? fail('Properti tidak ditemukan di katalog.');
+        const props = loadProps();
+        if (props.some((p) => p.citizenId === c.id && p.type === t.id)) fail(`Kamu sudah punya ${t.name}.`);
+        if (c.coins < t.price) fail(`Saldo kurang ${t.price - c.coins} ${cur} untuk membeli ${t.name}.`);
+        c.coins -= t.price;
+        const rt = c.rtRwAddress.split(' • ')[0];
+        props.push({ citizenId: c.id, type: t.id, rtLabel: rt, purchasedAt: nowIso() });
+        saveProps(props);
+        const owned = props.filter((p) => p.citizenId === c.id).map((p) => catalog.find((x) => x.id === p.type)!);
+        c.topProperty = owned.sort((a, b) => b.price - a.price)[0]?.name ?? null;
+        c.lastActiveAt = nowIso();
+        news(db, c.id, 'property', `${t.emoji} #${String(c.citizenNumber).padStart(4, '0')} ${c.username} membeli ${t.name} di ${rt}!`);
+        return { citizen: toPrivate(c) };
+      }),
+
+    getPropertyOwners: async (limit = 20) => {
+      const db = load();
+      return loadProps()
+        .sort((a, b) => b.purchasedAt.localeCompare(a.purchasedAt))
+        .slice(0, limit)
+        .flatMap((p) => {
+          const c = db.citizens.find((x) => x.id === p.citizenId);
+          const t = catalog.find((x) => x.id === p.type);
+          if (!c || !t) return [];
+          return [
+            {
+              citizenId: c.id,
+              citizenNumber: c.citizenNumber,
+              username: c.username,
+              roleTitle: c.roleTitle,
+              propertyType: t.id,
+              propertyName: t.name,
+              emoji: t.emoji,
+              rtLabel: p.rtLabel,
+              purchasedAt: p.purchasedAt,
+            },
+          ];
+        });
+    },
+
+    getDonorBoard: async (projectId, limit = 10) => {
+      const db = load();
+      return db.donations
+        .filter((d) => d.projectId === projectId && d.amount > 0)
+        .flatMap((d) => {
+          const c = db.citizens.find((x) => x.id === d.citizenId);
+          return c ? [{ citizenId: c.id, citizenNumber: c.citizenNumber, username: c.username, roleTitle: c.roleTitle, amount: d.amount }] : [];
+        })
+        .sort((a, b) => b.amount - a.amount || a.citizenNumber - b.citizenNumber)
+        .slice(0, limit)
+        .map((r, i) => ({ rank: i + 1, ...r }));
     },
 
     // --- Upgrade v2: Emote broadcast antar-tab ---

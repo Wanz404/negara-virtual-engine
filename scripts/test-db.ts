@@ -73,6 +73,8 @@ await db.exec(readFileSync(resolve(root, 'supabase/migrations/002_worker_checks.
 await db.exec(buildSeedSql(Object.values(WORLDS)));
 const upgradeV2 = readFileSync(resolve(root, 'supabase/migrations/upgrade_v2_social_ux.sql'), 'utf8');
 await db.exec(upgradeV2);
+const upgradeV3 = readFileSync(resolve(root, 'supabase/migrations/upgrade_v3_economy_ux.sql'), 'utf8');
+await db.exec(upgradeV3);
 const worldCount = await one<{ n: number }>('SELECT count(*)::int AS n FROM world_states');
 check('10 dunia ter-seed', worldCount.n === 10, worldCount);
 const zero = await one<{ n: number }>('SELECT count(*)::int AS n FROM citizens');
@@ -430,6 +432,90 @@ console.log('\n▶ Upgrade v2: Edit Profil & Global Chat');
   await expectError('anon tidak bisa UPDATE nama langsung', db.query(`UPDATE citizens SET username = 'x'`), 'permission denied');
   const viaRpc = await db.query<any>(`SELECT public.update_citizen_profile($1, $2, $3, NULL, '#00ff00', NULL) AS r`, [W, a.id, a.secret_token]);
   check('anon boleh memanggil RPC update_citizen_profile', viaRpc.rows[0].r.avatar_color === '#00ff00');
+  await db.exec('RESET ROLE');
+}
+
+
+// -----------------------------------------------------------------------------
+console.log('\n▶ Upgrade v3: Ekonomi (gaji, kerja cepat, misi, properti, patungan)');
+{
+  await db.exec(upgradeV2);
+  await db.exec(upgradeV3); // urutan v2 → v3 dijalankan ulang → idempotent
+  check('upgrade_v3_economy_ux.sql aman dijalankan ulang setelah v2', true);
+  const cat = await db.query<any>(`SELECT id, price, daily_bonus FROM property_types WHERE world_id = $1 ORDER BY sort`, [W]);
+  check('Katalog properti Konoha: 5 tier (80 → 2000)', cat.rows.length === 5 && Number(cat.rows[0].price) === 80 && Number(cat.rows[4].price) === 2000, cat.rows);
+
+  const e = await register('ekonomi_warga', 'Ekonom');
+  const coins0 = Number((await one<any>('SELECT coins FROM citizens WHERE id = $1', [e.id])).coins);
+  await expectError('Misi gaji ditolak sebelum klaim gaji', rpc('claim_mission', [W, e.id, e.secret_token, 'first_salary']), 'belum selesai');
+  const sal = await rpc('claim_daily_salary', [W, e.id, e.secret_token]);
+  check('Gaji harian warga biasa = 50 (tanpa bonus)', sal.reward === 50 && Number(sal.coins) === coins0 + 50, sal);
+  await expectError('Gaji harian hanya 1x / 24 jam', rpc('claim_daily_salary', [W, e.id, e.secret_token]), 'Tersedia lagi dalam');
+  await expectError('Token salah tidak bisa ambil gaji', rpc('claim_daily_salary', [W, e.id, c1.secret_token]), 'Sesi warga tidak valid');
+  const pres = await rpc('claim_daily_salary', [W, c1.id, c1.secret_token]);
+  check('Gaji RI-1 = 50 + 40 bonus jabatan', pres.reward === 90 && pres.rank_bonus === 40, pres);
+
+  const m1 = await rpc('claim_mission', [W, e.id, e.secret_token, 'first_salary']);
+  check('Misi 1 (gaji pertama) +30', m1.reward === 30);
+  await expectError('Misi tidak bisa diklaim 2x', rpc('claim_mission', [W, e.id, e.secret_token, 'first_salary']), 'sudah kamu ambil');
+  await expectError('Misi chat ditolak sebelum chat', rpc('claim_mission', [W, e.id, e.secret_token, 'first_chat']), 'belum selesai');
+  await rpc('send_global_chat', [W, e.id, e.secret_token, 'halo semua', null]);
+  check('Misi 2 (chat) +30 setelah kirim chat', (await rpc('claim_mission', [W, e.id, e.secret_token, 'first_chat'])).reward === 30);
+  check('Misi 3 (emote) +20', (await rpc('claim_mission', [W, e.id, e.secret_token, 'first_emote'])).reward === 20);
+  await expectError('Misi asing ditolak', rpc('claim_mission', [W, e.id, e.secret_token, 'free_money']), 'tidak dikenal');
+
+  const q1 = await rpc('do_quick_work', [W, e.id, e.secret_token]);
+  check('Kerja cepat +25 dengan label acak', q1.reward === 25 && typeof q1.label === 'string' && q1.remaining === 2, q1);
+  await expectError('Kerja cepat jeda 2 jam', rpc('do_quick_work', [W, e.id, e.secret_token]), 'capek');
+  await db.query(`UPDATE citizens SET quick_work_at = now() - interval '3 hours', quick_work_count = 3, quick_work_date = (now() AT TIME ZONE 'Asia/Jakarta')::date WHERE id = $1`, [e.id]);
+  await expectError('Kerja cepat maks 3x per hari', rpc('do_quick_work', [W, e.id, e.secret_token]), '3/3');
+  await db.query(`UPDATE citizens SET quick_work_date = (now() AT TIME ZONE 'Asia/Jakarta')::date - 1 WHERE id = $1`, [e.id]);
+  check('Kuota kerja cepat reset di hari berikutnya', (await rpc('do_quick_work', [W, e.id, e.secret_token])).remaining === 2);
+
+  // Patungan & properti mengikuti requireVerified dunia
+  await expectError('Warga belum dilantik tidak bisa beli properti', rpc('buy_property', [W, e.id, e.secret_token, 'gerobak_lapak']), 'dilantik');
+  await db.query(`UPDATE citizens SET follow_status = 'verified' WHERE id = $1`, [e.id]);
+  const d = await rpc('donate_to_project', [W, e.id, e.secret_token, 10]);
+  check('Patungan 10 RpK berhasil', Number(d.coins) > 0);
+  const m4 = await rpc('claim_mission', [W, e.id, e.secret_token, 'first_donation']);
+  check('Misi 4 (patungan) +40 & tercatat (Donatur Perintis)', m4.reward === 40 && 'first_donation' in m4.citizen.claimed_missions);
+  const bal = Number((await one<any>('SELECT coins FROM citizens WHERE id = $1', [e.id])).coins);
+  check('Hitungan onboarding: 20 + 50 + 120 - 10 + 25 + 25 = 230', bal === 230, bal);
+  const chatBefore = await one<any>(`SELECT count(*)::int AS n FROM global_chat_messages WHERE citizen_id = $1 AND kind = 'system'`, [e.id]);
+  await rpc('donate_to_project', [W, e.id, e.secret_token, 50]);
+  const chatAfter = await one<any>(`SELECT message FROM global_chat_messages WHERE citizen_id = $1 AND kind = 'system' ORDER BY id DESC LIMIT 1`, [e.id]);
+  check('Donasi >= 50 RpK → pengumuman sistem di Global Chat', chatBefore.n === 0 && String(chatAfter?.message).includes('menyumbang 50 RpK'), chatAfter);
+  const activeProject = (await one<any>('SELECT active_project_id AS p FROM world_states WHERE world_id = $1', [W])).p;
+  const board = await rpc('get_project_donor_board', [W, activeProject, 10]);
+  check('Top donatur berisi kursi, nama, jabatan, total', board.some((r: any) => r.citizen_id === e.id && Number(r.amount) === 60 && r.username && r.role_title && r.citizen_number), board);
+
+  const buy = await rpc('buy_property', [W, e.id, e.secret_token, 'warung_madura']);
+  check('Beli Warung Madura Mini (150) → saldo terpotong & top_property terisi', Number(buy.coins) === 230 - 50 - 150 && buy.top_property === 'Warung Madura Mini', buy);
+  await expectError('Properti yang sama tidak bisa dibeli 2x', rpc('buy_property', [W, e.id, e.secret_token, 'warung_madura']), 'sudah punya');
+  await expectError('Saldo tidak cukup → ditolak (tidak pernah minus)', rpc('buy_property', [W, e.id, e.secret_token, 'mansion_konglo']), 'Saldo kurang');
+  await expectError('Tipe properti asing ditolak', rpc('buy_property', [W, e.id, e.secret_token, 'istana_gratis']), 'tidak ditemukan');
+  const after = await one<any>('SELECT coins FROM citizens WHERE id = $1', [e.id]);
+  check('Saldo tetap ≥ 0 setelah pembelian gagal', Number(after.coins) === 30, after);
+  await db.query(`UPDATE citizens SET last_salary_at = now() - interval '25 hours' WHERE id = $1`, [e.id]);
+  const sal2 = await rpc('claim_daily_salary', [W, e.id, e.secret_token]);
+  check('Gaji harian + bonus properti (+12)', sal2.reward === 62 && Number(sal2.property_bonus) === 12, sal2);
+  const owners = await rpc('get_property_owners', [W, 10]);
+  check('Daftar pemilik usaha RT', owners[0]?.property_name === 'Warung Madura Mini' && String(owners[0]?.rt_label).startsWith('RT'), owners[0]);
+  const me3 = await rpc('get_my_citizen', [W, e.id, e.secret_token]);
+  check('get_my_citizen membawa top_property & claimed_missions (sync e-KTP)', me3.top_property === 'Warung Madura Mini' && Object.keys(me3.claimed_missions).length === 4);
+
+  // Ganti nama → nama di pesan sistem ikut sinkron
+  await rpc('update_citizen_profile', [W, e.id, e.secret_token, 'Ekonom Baru', null, null]);
+  const sys = await one<any>(`SELECT display_name FROM global_chat_messages WHERE citizen_id = $1 AND kind = 'system' LIMIT 1`, [e.id]);
+  check('Pesan sistem donasi ikut ganti nama', sys.display_name === 'Ekonom Baru');
+
+  await db.exec('SET ROLE anon');
+  await expectError('anon tidak bisa ubah saldo langsung', db.query(`UPDATE citizens SET coins = 999999`), 'permission denied');
+  await expectError('anon tidak bisa INSERT properti langsung', db.query(`INSERT INTO citizen_properties (world_id, citizen_id, property_type) VALUES ('${W}', '${e.id}', 'mansion_konglo')`), 'permission denied');
+  await expectError('anon tidak bisa ubah harga katalog', db.query(`UPDATE property_types SET price = 1`), 'permission denied');
+  const pubCat = await db.query<any>(`SELECT id FROM property_types WHERE world_id = $1`, [W]);
+  check('anon bisa baca katalog', pubCat.rows.length === 5);
+  await expectError('anon tidak bisa panggil helper nv_*', db.query(`SELECT nv_rank_salary_bonus(1)`), 'permission denied');
   await db.exec('RESET ROLE');
 }
 

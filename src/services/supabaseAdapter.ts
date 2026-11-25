@@ -1,6 +1,6 @@
 import { createClient, type RealtimeChannel, type SupabaseClient } from '@supabase/supabase-js';
 import type { WorldConfig } from '../configs/types';
-import { mapChat, mapCitizen, mapDonor, mapLeaderboard, mapMyCitizen, mapNews, mapPlot, mapPoll, mapWorld } from './mappers';
+import { mapChat, mapCitizen, mapDonor, mapDonorBoard, mapPropertyOwner, mapPropertyType, mapLeaderboard, mapMyCitizen, mapNews, mapPlot, mapPoll, mapWorld } from './mappers';
 import {
   ApiError,
   type EmoteEvent,
@@ -366,7 +366,7 @@ export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapter
     async getGlobalChat(limit = 50) {
       const { data, error } = await sb
         .from('global_chat_messages')
-        .select('id, citizen_id, seat_number, display_name, role_title, tier, message, emote_key, created_at')
+        .select('*') // '*' agar kolom v3 (kind) ikut tanpa error bila migrasi v3 belum dijalankan
         .eq('world_id', W)
         .order('id', { ascending: false })
         .limit(Math.min(50, Math.max(1, limit)));
@@ -409,6 +409,64 @@ export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapter
           void sb.removeChannel(channel);
         },
       };
+    },
+
+    // --- Upgrade v3: Ekonomi ---
+    async claimDailySalary(session) {
+      const r = await rpc('claim_daily_salary', auth(session));
+      return {
+        reward: Number(r.reward),
+        base: Number(r.base),
+        rankBonus: Number(r.rank_bonus),
+        propertyBonus: Number(r.property_bonus),
+        citizen: mapMyCitizen(r.citizen),
+      };
+    },
+
+    async doQuickWork(session) {
+      const r = await rpc('do_quick_work', auth(session));
+      return { reward: Number(r.reward), label: String(r.label), remaining: Number(r.remaining), citizen: mapMyCitizen(r.citizen) };
+    },
+
+    async claimMission(session, mission) {
+      const r = await rpc('claim_mission', { ...auth(session), p_mission: mission });
+      return { reward: Number(r.reward), citizen: mapMyCitizen(r.citizen) };
+    },
+
+    async getPropertyCatalog() {
+      const { data, error } = await sb.from('property_types').select('id, name, emoji, price, daily_bonus, sort').eq('world_id', W).order('sort');
+      if (error) {
+        if (/property_types|does not exist|schema cache/i.test(error.message)) return [];
+        throw new ApiError(error.message);
+      }
+      return (data ?? []).map(mapPropertyType);
+    },
+
+    async getMyProperties(citizenId) {
+      const { data, error } = await sb.from('citizen_properties').select('property_type').eq('world_id', W).eq('citizen_id', citizenId);
+      if (error) return [];
+      return (data ?? []).map((r: { property_type: string }) => r.property_type);
+    },
+
+    async buyProperty(session, propertyType) {
+      const r = await rpc('buy_property', { ...auth(session), p_property_type: propertyType });
+      return { citizen: mapMyCitizen(r.citizen) };
+    },
+
+    async getPropertyOwners(limit = 20) {
+      try {
+        return ((await rpc<any[]>('get_property_owners', { p_world_id: W, p_limit: limit })) ?? []).map(mapPropertyOwner);
+      } catch {
+        return [];
+      }
+    },
+
+    async getDonorBoard(projectId, limit = 10) {
+      try {
+        return ((await rpc<any[]>('get_project_donor_board', { p_world_id: W, p_project_id: projectId, p_limit: limit })) ?? []).map(mapDonorBoard);
+      } catch {
+        return [];
+      }
     },
   };
 

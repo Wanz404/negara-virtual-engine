@@ -1,7 +1,10 @@
 import type {
   ChatMessage,
+  DonorBoardRow,
   DonorRow,
   EmoteKey,
+  PropertyOwnerRow,
+  PropertyType,
   LeaderboardRow,
   MyCitizen,
   NewsItem,
@@ -61,6 +64,7 @@ export function mapCitizen(r: Row): PublicCitizen {
     lastWorkAt: str(r.last_work_at),
     lastActiveAt: str(r.last_active_at),
     createdAt: r.created_at,
+    topProperty: str(r.top_property),
   };
 }
 
@@ -72,6 +76,41 @@ export function mapMyCitizen(r: Row): MyCitizen {
     hasRecoveryPin: Boolean(r.has_recovery_pin),
     nameUpdatedAt: str(r.name_updated_at),
     nameEditCount: num(r.name_edit_count),
+    lastSalaryAt: str(r.last_salary_at),
+    quickWorkAt: str(r.quick_work_at),
+    quickWorkDate: str(r.quick_work_date),
+    quickWorkCount: num(r.quick_work_count),
+    claimedMissions: r.claimed_missions && typeof r.claimed_missions === 'object' ? r.claimed_missions : {},
+    lastChatAt: str(r.last_chat_at),
+  };
+}
+
+export function mapPropertyType(r: Row): PropertyType {
+  return { id: r.id, name: r.name, emoji: r.emoji ?? '🏠', price: num(r.price), dailyBonus: num(r.daily_bonus), sort: num(r.sort) };
+}
+
+export function mapPropertyOwner(r: Row): PropertyOwnerRow {
+  return {
+    citizenId: r.citizen_id,
+    citizenNumber: num(r.citizen_number),
+    username: String(r.username ?? ''),
+    roleTitle: String(r.role_title ?? ''),
+    propertyType: r.property_type,
+    propertyName: String(r.property_name ?? ''),
+    emoji: r.emoji ?? '🏠',
+    rtLabel: String(r.rt_label ?? ''),
+    purchasedAt: r.purchased_at,
+  };
+}
+
+export function mapDonorBoard(r: Row): DonorBoardRow {
+  return {
+    rank: num(r.rank),
+    citizenId: r.citizen_id,
+    citizenNumber: num(r.citizen_number),
+    username: String(r.username ?? ''),
+    roleTitle: String(r.role_title ?? ''),
+    amount: num(r.amount),
   };
 }
 
@@ -89,6 +128,7 @@ export function mapChat(r: Row): ChatMessage {
     message: String(r.message ?? ''),
     emoteKey: ek && (EMOTE_KEYS as string[]).includes(ek) ? (ek as EmoteKey) : null,
     createdAt: r.created_at,
+    kind: r.kind === 'system' ? 'system' : 'chat',
   };
 }
 

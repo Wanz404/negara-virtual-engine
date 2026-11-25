@@ -1,4 +1,5 @@
 import { WORLD } from '../configs';
+import { ktpPropertyLabel } from '../lib/economy';
 import { findTier, ringName } from '../lib/game';
 import { formatCitizenNumber, formatCoins } from '../lib/format';
 import { barcodeBars, followStatusLabel, ktpPalette, stampSpec } from '../lib/ktpStyle';
@@ -68,7 +69,7 @@ export function KtpCardView({ me, ownedPlots }: { me: MyCitizen; ownedPlots: num
     ['Zona', `Ring ${ring} • ${ringName(WORLD, ring)}`],
     ['Warga sejak', `DAY ${me.joinedDay}`],
     ['Kekayaan', formatCoins(me.coins, WORLD.currency.code)],
-    ['Properti', ownedPlots > 0 ? `${ownedPlots} kavling` : 'Belum punya'],
+    ['Properti', ktpPropertyLabel(me, ownedPlots)],
     ['Status', followStatusLabel(me.followStatus)],
   ];
 

@@ -63,7 +63,7 @@ export function KtpModal({
 
   const [preview, setPreview] = useState<string | null>(null);
   // Pratinjau PNG lama dibuang saat nama/tampilan berubah → Simpan PNG berikutnya pakai data terbaru.
-  useEffect(() => setPreview(null), [me.username, me.avatarColor, me.avatarStyle?.accessory]);
+  useEffect(() => setPreview(null), [me.username, me.avatarColor, me.avatarStyle?.accessory, me.topProperty]);
   const inInstagram = typeof navigator !== 'undefined' && /Instagram|FBAN|FBAV/i.test(navigator.userAgent);
 
   /**
