@@ -4,7 +4,9 @@ import { findTier, ringName } from '../lib/game';
 import { formatCitizenNumber, formatCoins } from '../lib/format';
 import { barcodeBars, followStatusLabel, ktpPalette, stampSpec } from '../lib/ktpStyle';
 import type { MyCitizen } from '../services';
+import { inaugurationBadge } from '../lib/inauguration';
 import { Avatar } from './Avatar';
+import { InaugurationBadge } from './Inauguration';
 
 function InkStamp({ status, size = 104 }: { status: MyCitizen['followStatus']; size?: number }) {
   const spec = stampSpec(status, WORLD.copy.stamps[status === 'recheck_requested' ? 'pending' : status]);
@@ -141,6 +143,11 @@ export function KtpCardView({ me, ownedPlots }: { me: MyCitizen; ownedPlots: num
               </div>
             ))}
           </dl>
+          {inaugurationBadge(me.citizenNumber, me.followStatus) && (
+            <div className="mt-3">
+              <InaugurationBadge citizenNumber={me.citizenNumber} followStatus={me.followStatus} />
+            </div>
+          )}
           <div className="mt-3 flex justify-between gap-2 border-t pt-2 text-[9px] font-bold text-gray-500" style={{ borderColor: `${p.accent}40` }}>
             <span className="truncate">@{WORLD.igAccountHandle}</span>
             <span className="truncate">{WORLD.domain}</span>

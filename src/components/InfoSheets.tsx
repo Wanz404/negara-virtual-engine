@@ -3,6 +3,7 @@ import { WORLD } from '../configs';
 import { findTier } from '../lib/game';
 import { formatCitizenNumber, formatCoins, formatRelative } from '../lib/format';
 import { playCoin } from '../lib/fx';
+import { INAUGURATION_ENABLED, INAUGURATION_PINNED_NEWS } from '../lib/inauguration';
 import { api, type DonorRow, type MyCitizen, type NewsItem, type PublicCitizen, type Session, type WorldState } from '../services';
 import { Avatar } from './Avatar';
 import { Button, Modal, errorMessage, inputClass } from './ui';
@@ -212,6 +213,18 @@ const NEWS_ICON: Record<string, string> = {
 export function NewsPanel({ open, onClose, news, world }: { open: boolean; onClose: () => void; news: NewsItem[]; world: WorldState | null }) {
   return (
     <Modal open={open} onClose={onClose} title={`📢 ${WORLD.copy.tvName}`}>
+      {INAUGURATION_ENABLED && (
+        <div className="mb-3 rounded-2xl p-[2px]" style={{ background: 'linear-gradient(135deg, #fff3c4, #c8901c 40%, #fde68a 70%, #8a5a0b)' }}>
+          <div className="rounded-[14px] bg-gradient-to-b from-[#3b1d00] to-[#1c0d00] p-3 text-amber-50">
+            <div className="flex items-center gap-1.5 text-[10px] font-black tracking-wider text-amber-300 uppercase">
+              <span>📌 Pengumuman Resmi Negara</span>
+              <span className="rounded-full bg-amber-300 px-1.5 text-[9px] text-amber-950">DISEMATKAN</span>
+            </div>
+            <div className="mt-1 text-[15px] leading-snug font-black text-amber-200">🎖️ {INAUGURATION_PINNED_NEWS.title}</div>
+            <p className="mt-1 text-[12.5px] leading-snug font-semibold text-amber-50/90">{INAUGURATION_PINNED_NEWS.body}</p>
+          </div>
+        </div>
+      )}
       {world?.presidentAnnouncement && (
         <div className="mb-3 rounded-2xl bg-accent/30 p-3">
           <div className="text-[10px] font-black text-muted uppercase">📌 Pidato Negara • {formatRelative(world.announcementAt)}</div>

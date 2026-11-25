@@ -1,4 +1,5 @@
 import { WORLD } from '../configs';
+import { INAUGURATION_ENABLED, INAUGURATION_TICKER } from '../lib/inauguration';
 import type { NewsItem, WorldState } from '../services';
 
 const ICON: Record<string, string> = {
@@ -18,8 +19,9 @@ const ICON: Record<string, string> = {
 export function NewsTicker({ news, world }: { news: NewsItem[]; world: WorldState | null }) {
   const items = news.slice(0, 15);
   const pinned = world?.presidentAnnouncement;
-  const text =
+  const feed =
     items.length > 0 ? items.map((n) => `${ICON[n.category] ?? '•'} ${n.message}`).join('     •     ') : `Selamat datang di ${WORLD.copy.nationName}! ${WORLD.copy.tagline}`;
+  const text = INAUGURATION_ENABLED ? `🎖️ ${INAUGURATION_TICKER}     •     ${feed}` : feed;
 
   return (
     <div className="flex h-9 items-stretch overflow-hidden bg-gray-950 text-white shadow-md">

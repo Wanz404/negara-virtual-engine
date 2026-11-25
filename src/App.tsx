@@ -381,8 +381,11 @@ export default function App() {
   // Warga hasil Click-to-Locate yang tidak ada di sampel 120 ikut ditampilkan di peta.
   const mapCitizens = useMemo(() => {
     const ids = new Set(citizens.map((c) => c.id));
-    return [...citizens, ...extraCitizens.filter((c) => !ids.has(c.id))];
-  }, [citizens, extraCitizens]);
+    const extra = extraCitizens.filter((c) => !ids.has(c.id));
+    // Snapshot edge bersifat publik (tanpa p_me) → pastikan warga sendiri selalu ada di peta.
+    const self = me && !ids.has(me.id) && !extra.some((c) => c.id === me.id) ? [me] : [];
+    return [...self, ...citizens, ...extra];
+  }, [citizens, extraCitizens, me]);
   const mapData = useMemo<MapData>(
     () => ({ world, citizens: mapCitizens, ownedPlots, members, meId: me?.id ?? null, myIncomeBonusPct: tier?.perks.incomeBonusPct ?? 0 }),
     [world, mapCitizens, ownedPlots, members, me?.id, tier],
@@ -537,7 +540,7 @@ export default function App() {
     mapRef.current?.setHighlight(null);
   }
 
-  const sheetCitizen = sheet?.type === 'citizen' ? (citizens.find((c) => c.id === sheet.id) ?? null) : null;
+  const sheetCitizen = sheet?.type === 'citizen' ? (mapCitizens.find((c) => c.id === sheet.id) ?? null) : null;
 
   return (
     <div

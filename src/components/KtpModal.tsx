@@ -6,6 +6,8 @@ import { normalizeIgUsername, validateIgUsername } from '../lib/validation';
 import { ktpFileName, renderKtpCanvas } from '../lib/ktpCanvas';
 import { api, type MyCitizen, type Session } from '../services';
 import { EditProfileForm } from './EditProfile';
+import { inaugurationBadge, takeConfettiTicket } from '../lib/inauguration';
+import { GoldConfetti } from './Inauguration';
 import { KtpCardView } from './KtpCardView';
 import { Button, Modal, errorMessage, inputClass } from './ui';
 
@@ -66,6 +68,12 @@ export function KtpModal({
   useEffect(() => setPreview(null), [me.username, me.avatarColor, me.avatarStyle?.accessory, me.topProperty]);
   const inInstagram = typeof navigator !== 'undefined' && /Instagram|FBAN|FBAV/i.test(navigator.userAgent);
 
+  // Konfeti emas: hanya Perintis 1K (#0001–#1000), hanya sekali per perangkat saat pertama buka E-KTP.
+  const [confetti, setConfetti] = useState(false);
+  useEffect(() => {
+    if (open && inaugurationBadge(me.citizenNumber, me.followStatus)?.tier === 'pioneer' && takeConfettiTicket()) setConfetti(true);
+  }, [open, me.citizenNumber]);
+
   /**
    * Fallback berlapis (browser IG sering memblokir <a download>):
    *  1) Web Share API dengan file PNG  2) <a download> standar  3) pratinjau <img> untuk tekan-tahan → Simpan Gambar.
@@ -114,9 +122,11 @@ export function KtpModal({
 
   return (
     <Modal open={open} onClose={onClose} title="🪪 KTP Virtual-ku">
+      {confetti && <GoldConfetti onDone={() => setConfetti(false)} />}
       <KtpCard me={me} ownedPlots={ownedPlots} />
+      <p className="mt-2 text-center text-[11px] font-semibold text-muted">📸 Screenshot kartu di atas, atau simpan PNG versi Story (9:16) di bawah.</p>
 
-      <div className="mt-3 grid grid-cols-2 gap-2">
+      <div className="mt-2 grid grid-cols-2 gap-2">
         <Button variant="secondary" loading={busy === 'png'} onClick={() => run('png', () => saveKtp(false))}>
           ⬇️ Simpan PNG
         </Button>

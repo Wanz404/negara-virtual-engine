@@ -442,3 +442,87 @@ export function drawTrainLoop(ctx: Ctx, half: number, t: number, color: string):
     ctx.restore();
   }
 }
+
+/**
+ * Hiasan Pelantikan Gelombang 1 di Alun-Alun Tugu: umbul-umbul merah-putih melingkar, panggung mini
+ * dengan spanduk "PELANTIKAN 1.000 PERINTIS" + dua bendera. Murni gambar (tidak ada hit-area baru).
+ */
+export function drawInaugurationDecor(ctx: Ctx, r: Rect, t: number): void {
+  const cx = r.x + r.w / 2;
+  const cy = r.y + r.h / 2;
+  const R = Math.min(r.w, r.h) / 2;
+
+  // Umbul-umbul segitiga di antara pohon (lingkar luar)
+  const ring = R * 0.9;
+  for (let i = 0; i < 8; i++) {
+    const a0 = (i / 8) * Math.PI * 2 + Math.PI / 8;
+    const a1 = ((i + 1) / 8) * Math.PI * 2 + Math.PI / 8;
+    const x0 = cx + Math.cos(a0) * ring;
+    const y0 = cy + Math.sin(a0) * ring - 10;
+    const x1 = cx + Math.cos(a1) * ring;
+    const y1 = cy + Math.sin(a1) * ring - 10;
+    const sag = 7 + Math.sin(t * 2 + i) * 1.2;
+    ctx.strokeStyle = 'rgba(120,53,15,0.55)';
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.quadraticCurveTo((x0 + x1) / 2, (y0 + y1) / 2 + sag, x1, y1);
+    ctx.stroke();
+    for (let k = 1; k < 6; k++) {
+      const u = k / 6;
+      const px = (1 - u) * (1 - u) * x0 + 2 * (1 - u) * u * ((x0 + x1) / 2) + u * u * x1;
+      const py = (1 - u) * (1 - u) * y0 + 2 * (1 - u) * u * ((y0 + y1) / 2 + sag) + u * u * y1;
+      const sw = Math.sin(t * 4 + i * 2 + k) * 0.8;
+      ctx.fillStyle = k % 2 ? '#dc2626' : '#ffffff';
+      ctx.beginPath();
+      ctx.moveTo(px - 2.6, py);
+      ctx.lineTo(px + 2.6, py);
+      ctx.lineTo(px + sw, py + 5.5);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  // Panggung mini + spanduk di depan tugu
+  const sw = Math.min(r.w * 0.62, 150);
+  const sx = cx - sw / 2;
+  const sy = cy + R * 0.36;
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  roundRect(ctx, sx + 3, sy + 3, sw, 22, 4);
+  ctx.fill();
+  ctx.fillStyle = '#7f1d1d';
+  roundRect(ctx, sx, sy + 8, sw, 14, 3);
+  ctx.fill();
+  ctx.fillStyle = '#b91c1c';
+  ctx.fillRect(sx, sy + 8, sw, 3);
+  // spanduk emas
+  const bh = 13;
+  const by = sy - 6;
+  const grad = ctx.createLinearGradient(sx, by, sx + sw, by);
+  grad.addColorStop(0, '#c8901c');
+  grad.addColorStop(0.5, '#fde68a');
+  grad.addColorStop(1, '#c8901c');
+  ctx.fillStyle = grad;
+  roundRect(ctx, sx + 4, by, sw - 8, bh, 3);
+  ctx.fill();
+  ctx.strokeStyle = '#7c2d12';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.save();
+  ctx.fillStyle = '#7c2d12';
+  ctx.font = `900 ${Math.max(6, Math.min(8.5, sw / 17))}px ui-sans-serif, system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('PELANTIKAN 1.000 PERINTIS', cx, by + bh / 2 + 0.5, sw - 14);
+  ctx.restore();
+  // bendera di kedua ujung panggung
+  flag(ctx, sx + 2, sy + 10, t, 30);
+  flag(ctx, sx + sw - 20, sy + 10, t + 0.6, 30);
+  // kilau berkala di spanduk
+  const shine = ((t * 0.6) % 1.6) - 0.3;
+  if (shine > 0 && shine < 1) {
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
+    const hx = sx + 4 + shine * (sw - 8);
+    ctx.fillRect(hx - 3, by + 1, 6, bh - 2);
+  }
+}

@@ -8,6 +8,7 @@ import { drawBuilding, drawPlotBase } from './draw/plots';
 import {
   drawElite,
   drawGate,
+  drawInaugurationDecor,
   drawMonument,
   drawPalace,
   drawParliament,
@@ -23,6 +24,7 @@ import { attachInput } from './input';
 import { SpatialHash } from './spatialHash';
 import { chibiSprite } from './sprites';
 import { EMOTE_DURATION_MS, emoteDef, emoteImage } from '../lib/emotes';
+import { INAUGURATION_ENABLED } from '../lib/inauguration';
 import type { EmoteKey } from '../services/types';
 
 interface ActiveEmote {
@@ -398,6 +400,7 @@ export class MapEngine {
           break;
         case 'plaza':
           drawPlaza(ctx, r, t, config.theme);
+          if (INAUGURATION_ENABLED) drawInaugurationDecor(ctx, r, t);
           break;
         case 'project_site':
           drawProjectSite(ctx, r, t, progress, project?.emoji ?? '🚧', !!w?.activeProjectCompleted);

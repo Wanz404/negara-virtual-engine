@@ -21,7 +21,24 @@ export interface SupabaseAdapterOptions {
   url: string;
   anonKey: string;
   registerVia: 'edge' | 'rpc';
+  /** Endpoint edge-cache publik (Cloudflare Pages Function). null = selalu query Supabase langsung. */
+  snapshotUrl?: string | null;
 }
+
+interface PublicSnapshot {
+  v: 1;
+  generatedAt: string;
+  world: Record<string, unknown> & { world_id: string };
+  citizens: any[];
+  news: any[];
+  plots: any[];
+  plotRings: number[];
+}
+
+/** Snapshot dipakai ulang di klien selama ini (world + peta + berita + kavling dari 1 request). */
+const SNAPSHOT_REUSE_MS = 30_000;
+/** Endpoint gagal → langsung ke Supabase dulu selama ini sebelum mencoba edge lagi. */
+const SNAPSHOT_BACKOFF_MS = 60_000;
 
 export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapterOptions): NationApi {
   const sb: SupabaseClient = createClient(opts.url, opts.anonKey, {
@@ -31,6 +48,8 @@ export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapter
   const W = config.worldId;
 
   async function rpc<T = any>(fn: string, args: Record<string, unknown>): Promise<T> {
+    // Aksi tulis (warga/admin) → baca berikutnya dari perangkat ini langsung ke Supabase agar hasilnya langsung terlihat.
+    if (!fn.startsWith('get_') && ('p_token' in args || 'p_admin_secret' in args)) markWrite();
     const { data, error } = await sb.rpc(fn, args);
     if (error) throw new ApiError(error.message);
     if (data && typeof data === 'object' && (data as { ok?: boolean }).ok === false) {
@@ -41,10 +60,48 @@ export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapter
 
   const auth = (s: Session) => ({ p_world_id: W, p_citizen_id: s.citizenId, p_token: s.token });
 
+  // --- Perisai trafik: data baca publik lewat /api/snapshot (edge cache 10 dtk), fallback otomatis ke Supabase ---
+  let snap: { data: PublicSnapshot; at: number } | null = null;
+  let snapInflight: Promise<PublicSnapshot | null> | null = null;
+  let snapDownUntil = 0;
+  /** Setelah aksi tulis, lewati snapshot (edge bisa basi ≤10 dtk + cache klien) selama jendela ini. */
+  let bypassUntil = 0;
+  function markWrite(): void {
+    snap = null;
+    bypassUntil = Date.now() + SNAPSHOT_REUSE_MS;
+  }
+
+  function snapshot(): Promise<PublicSnapshot | null> {
+    if (!opts.snapshotUrl || Date.now() < snapDownUntil || Date.now() < bypassUntil) return Promise.resolve(null);
+    if (snap && Date.now() - snap.at < SNAPSHOT_REUSE_MS) return Promise.resolve(snap.data);
+    if (snapInflight) return snapInflight;
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 8_000);
+    snapInflight = fetch(opts.snapshotUrl, { signal: ctrl.signal, headers: { Accept: 'application/json' } })
+      .then(async (res) => {
+        if (!res.ok || !(res.headers.get('content-type') ?? '').includes('application/json')) throw new Error(`snapshot HTTP ${res.status}`);
+        const body = (await res.json()) as PublicSnapshot;
+        if (body?.v !== 1 || body.world?.world_id !== W || !Array.isArray(body.citizens)) throw new Error('snapshot tidak valid');
+        snap = { data: body, at: Date.now() };
+        return body;
+      })
+      .catch(() => {
+        snapDownUntil = Date.now() + SNAPSHOT_BACKOFF_MS;
+        return null;
+      })
+      .finally(() => {
+        clearTimeout(timeout);
+        snapInflight = null;
+      });
+    return snapInflight;
+  }
+
   const api: NationApi = {
     mode: 'supabase',
 
     async getWorldState() {
+      const cached = await snapshot();
+      if (cached) return mapWorld(cached.world);
       const { data, error } = await sb.from('world_states').select(WORLD_COLUMNS).eq('world_id', W).maybeSingle();
       if (error) throw new ApiError(error.message);
       if (!data) throw new ApiError(`Dunia "${W}" belum di-seed. Jalankan supabase/seed.sql di Supabase.`);
@@ -52,6 +109,8 @@ export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapter
     },
 
     async getNews(limit = 30) {
+      const cached = limit <= 30 ? await snapshot() : null;
+      if (cached) return cached.news.slice(0, limit).map(mapNews);
       const { data, error } = await sb
         .from('news_feed')
         .select('id, category, message, citizen_id, created_at')
@@ -63,6 +122,9 @@ export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapter
     },
 
     async getMapCitizens(meId = null, limit = 120) {
+      // Snapshot publik tidak memuat "aku" (p_me = null); App menambahkan warga sendiri dari get_my_citizen.
+      const cached = limit <= 120 ? await snapshot() : null;
+      if (cached) return cached.citizens.slice(0, limit).map(mapCitizen);
       const data = await rpc<any[]>('get_map_citizens', { p_world_id: W, p_me: meId, p_limit: limit });
       return (data ?? []).map(mapCitizen);
     },
@@ -76,6 +138,8 @@ export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapter
 
     async getOwnedPlots(rings) {
       if (rings.length === 0) return [];
+      const cached = await snapshot();
+      if (cached && rings.every((r) => cached.plotRings.includes(r))) return cached.plots.filter((p) => rings.includes(Number(p.ring_level))).map(mapPlot);
       const { data, error } = await sb
         .from('land_plots')
         .select(PLOT_COLUMNS)
@@ -118,6 +182,7 @@ export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapter
 
     async register(input: RegisterInput) {
       let raw: any;
+      markWrite();
       if (opts.registerVia === 'edge') {
         const res = await fetch(`${opts.url}/functions/v1/register-citizen`, {
           method: 'POST',

@@ -16,3 +16,6 @@ worker/.env.*
 supabase/.temp
 supabase/.branches
 .env.production.local
+
+# Kredensial publik Pages Function, ditulis ulang oleh scripts/deploy-world.mjs
+functions/api/_env.generated.ts

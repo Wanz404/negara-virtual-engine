@@ -9,8 +9,12 @@ const anonKey = String(env.VITE_SUPABASE_ANON_KEY ?? '').trim();
 const forceMock = String(env.VITE_DEV_MOCK_MODE ?? '').toLowerCase() === 'true';
 const registerVia = String(env.VITE_REGISTER_VIA ?? 'edge').toLowerCase() === 'rpc' ? 'rpc' : 'edge';
 
+/** Edge cache /api/snapshot hanya ada di build production Cloudflare Pages; `vite` dev selalu langsung ke Supabase. */
+const snapshotUrl = env.PROD && String(env.VITE_SNAPSHOT_API ?? 'on').toLowerCase() !== 'off' ? '/api/snapshot' : null;
+
 /** Fallback otomatis: env Supabase kosong → Mode Sandbox (localStorage). */
-export const api: NationApi = !forceMock && url && anonKey ? createSupabaseAdapter(WORLD, { url, anonKey, registerVia }) : createSandboxAdapter(WORLD);
+export const api: NationApi =
+  !forceMock && url && anonKey ? createSupabaseAdapter(WORLD, { url, anonKey, registerVia, snapshotUrl }) : createSandboxAdapter(WORLD);
 
 export const isSandbox = api.mode === 'sandbox';
 export const sandboxApi: SandboxApi | null = isSandbox ? (api as SandboxApi) : null;

@@ -11,7 +11,7 @@
  * mulai dari 0 warga asli di Supabase, bukan localStorage.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -141,7 +141,21 @@ for (const worldId of worlds) {
     fail(`Gagal membuat proyek Pages "${project}".`);
   }
 
-  // 4) Deploy
+  // 3b) Kredensial publik untuk Pages Function /api/snapshot (edge cache). Anon/publishable key memang sudah ada di
+  // bundle frontend; file ini di-.gitignore dan ditulis ulang tiap deploy agar selalu cocok dengan dunia yang dideploy.
+  writeFileSync(
+    join(root, 'functions', 'api', '_env.generated.ts'),
+    `// AUTO-GENERATED oleh scripts/deploy-world.mjs — jangan di-commit.
+` +
+      `export const SUPABASE_URL = ${JSON.stringify(buildEnv.VITE_SUPABASE_URL)};
+` +
+      `export const SUPABASE_ANON_KEY = ${JSON.stringify(anon)};
+` +
+      `export const WORLD_ID = ${JSON.stringify(worldId)};
+`,
+  );
+
+  // 4) Deploy (folder ./functions ikut di-bundle Wrangler sebagai Pages Functions)
   const d = run('npx', ['-y', WRANGLER, 'pages', 'deploy', 'dist', `--project-name=${project}`, '--branch=main', '--commit-dirty=true'], {}, true);
   assertUntouched();
   if (d.code !== 0) fail(`Deploy ${worldId} gagal.`);

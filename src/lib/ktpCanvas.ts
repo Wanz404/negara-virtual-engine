@@ -9,6 +9,7 @@ import { ktpPropertyLabel } from './economy';
 import { chibiSprite } from '../engine/sprites';
 import { findTier, ringName } from './game';
 import { formatCitizenNumber, formatCoins } from './format';
+import { inaugurationBadge } from './inauguration';
 import { barcodeBars, followStatusLabel, ktpPalette, stampSpec, type KtpPalette } from './ktpStyle';
 import type { MyCitizen } from '../services/types';
 
@@ -465,6 +466,34 @@ export function renderKtpCanvas(me: MyCitizen, ownedPlots: number): HTMLCanvasEl
   drawFit(g, `@${WORLD.igAccountHandle}`, CX, footY, CW / 2 - 20, 22, 16, 800);
   g.textAlign = 'right';
   drawFit(g, WORLD.domain, CX + CW, footY, CW / 2 - 20, 22, 16, 700);
+
+  // ---- Pita status pelantikan (menimpa tepi bawah kartu) ----
+  const inaug = inaugurationBadge(me.citizenNumber, me.followStatus);
+  if (inaug) {
+    const gold = inaug.tier === 'pioneer';
+    const bw = 820;
+    const bh = 92;
+    const bx = W / 2 - bw / 2;
+    const by = CARD.y + CARD.h - bh / 2 - 6;
+    g.save();
+    g.shadowColor = gold ? '#f5c542aa' : 'rgba(0,0,0,0.45)';
+    g.shadowBlur = 36;
+    const frame = g.createLinearGradient(bx, by, bx + bw, by + bh);
+    const stops = gold ? ['#fff3c4', '#c8901c', '#fde68a', '#8a5a0b'] : inaug.tier === 'queue' ? ['#f8fafc', '#93c5fd', '#e2e8f0', '#3b82f6'] : ['#ecfdf5', '#34d399', '#a7f3d0', '#065f46'];
+    stops.forEach((c, i) => frame.addColorStop(i / (stops.length - 1), c));
+    g.fillStyle = frame;
+    rr(g, bx, by, bw, bh, 26);
+    g.fill();
+    g.restore();
+    g.fillStyle = gold ? '#2a1203' : inaug.tier === 'queue' ? '#0b1b3a' : '#052e1f';
+    rr(g, bx + 6, by + 6, bw - 12, bh - 12, 21);
+    g.fill();
+    g.textAlign = 'center';
+    g.fillStyle = gold ? '#fde68a' : '#ffffff';
+    drawFit(g, `${gold ? '🏅' : inaug.tier === 'queue' ? '⏳' : '🪪'} ${inaug.title}`, W / 2, by + 48, bw - 60, 38, 24, 900);
+    g.fillStyle = gold ? '#f5c542' : 'rgba(255,255,255,0.75)';
+    drawFit(g, inaug.subtitle, W / 2, by + 76, bw - 60, 20, 14, 800);
+  }
 
   // ---- Hook + CTA ----
   g.textAlign = 'center';

@@ -383,3 +383,18 @@ button:disabled {
     animation-duration: 0.01ms;
   }
 }
+
+/* ===========================================================================
+   Pelantikan Gelombang 1 — kilau stempel emas di E-KTP
+   =========================================================================== */
+@keyframes inaug-shine {
+  0% { transform: translateX(0) skewX(-20deg); }
+  60%, 100% { transform: translateX(400%) skewX(-20deg); }
+}
+.inaug-shine {
+  background: linear-gradient(90deg, transparent, rgba(255, 243, 196, 0.55), transparent);
+  animation: inaug-shine 2.8s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .inaug-shine { animation: none; display: none; }
+}
