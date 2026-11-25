@@ -26,7 +26,7 @@ const PLOT_COLUMNS =
 const sbHeaders = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, Accept: 'application/json' };
 
 async function sb(path: string, init?: RequestInit): Promise<any> {
-  const res = await fetch(`${SUPABASE_URL}${path}`, { ...init, headers: { ...sbHeaders, ...(init?.headers ?? {}) }, signal: AbortSignal.timeout(25_000) });
+  const res = await fetch(`${SUPABASE_URL}${path}`, { ...init, headers: { ...sbHeaders, ...(init?.headers ?? {}) }, signal: AbortSignal.timeout(28_000) });
   if (!res.ok) throw new Error(`${path.split('?')[0]} → HTTP ${res.status}`);
   return res.json();
 }
@@ -51,7 +51,7 @@ async function build(): Promise<Record<string, unknown>> {
 
 /** Salinan segar (10 dtk) + salinan cadangan (10 menit) + kunci refresh (20 dtk) di cache edge yang sama. */
 const STALE_TTL = 600;
-const LOCK_TTL = 20;
+const LOCK_TTL = 30;
 function cached(body: string, ttl: number): Response {
   return new Response(body, { headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': `public, max-age=${ttl}` } });
 }
@@ -87,7 +87,7 @@ export async function onRequestGet(ctx: Ctx): Promise<Response> {
   const stale = await cache.match(staleKey);
   if (stale) {
     // Supabase lambat tidak boleh membuat pengunjung menunggu: sajikan cadangan, perbarui di belakang layar
-    // (paling banyak 1 refresh per 20 dtk per lokasi edge berkat kunci di cache).
+    // (paling banyak 1 refresh per 30 dtk per lokasi edge berkat kunci di cache).
     if (!(await cache.match(lockKey))) {
       ctx.waitUntil(
         cache.put(lockKey, cached('1', LOCK_TTL)).then(() => refresh(cache, freshKey, staleKey)).catch(() => undefined),
@@ -96,12 +96,22 @@ export async function onRequestGet(ctx: Ctx): Promise<Response> {
     return client(await stale.text(), 'STALE');
   }
 
+  // Cache kosong total: hanya 1 request per 30 dtk per lokasi edge yang boleh membangun dari Supabase.
+  // Sisanya dijawab 503 instan (frontend lalu fallback seperti biasa) — edge TIDAK PERNAH melipatgandakan query.
+  if (await cache.match(lockKey)) return warming();
+  await cache.put(lockKey, cached('1', LOCK_TTL));
+  const job = refresh(cache, freshKey, staleKey);
+  ctx.waitUntil(job.catch(() => undefined)); // tetap selesai & mengisi cache walau pengunjung pertama sudah pergi
   try {
-    return client(await refresh(cache, freshKey, staleKey), 'MISS');
-  } catch (e) {
-    return new Response(JSON.stringify({ error: String((e as Error).message ?? e) }), {
-      status: 502,
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
-    });
+    return client(await job, 'MISS');
+  } catch {
+    return warming();
   }
+}
+
+function warming(): Response {
+  return new Response(JSON.stringify({ error: 'snapshot warming' }), {
+    status: 503,
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Retry-After': '30' },
+  });
 }
