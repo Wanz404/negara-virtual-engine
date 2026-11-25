@@ -51,8 +51,8 @@ async function build(): Promise<Record<string, unknown>> {
   return { v: 1, generatedAt: new Date().toISOString(), world, citizens: citizens ?? [], news: news ?? [], plots, plotRings };
 }
 
-/** Salinan segar (10 dtk) + salinan cadangan (10 menit) + kunci refresh (20 dtk) di cache edge yang sama. */
-const STALE_TTL = 600;
+/** Salinan segar (10 dtk) + salinan cadangan (1 jam) + kunci refresh (20 dtk) di cache edge yang sama. */
+const STALE_TTL = 3600;
 const LOCK_TTL = 45;
 function cached(body: string, ttl: number): Response {
   return new Response(body, { headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': `public, max-age=${ttl}` } });
