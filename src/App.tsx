@@ -64,6 +64,7 @@ function useNow(ms = 1000): number {
 export default function App() {
   const { toasts, push: toast } = useToasts();
   const [world, setWorld] = useState<WorldState | null>(null);
+  const [lastDataSyncAt, setLastDataSyncAt] = useState<number | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [citizens, setCitizens] = useState<PublicCitizen[]>([]);
   const members: PresenceMember[] = [];
@@ -138,6 +139,7 @@ export default function App() {
     if (worldRequest.current) return worldRequest.current;
     const request = api.getWorldState().then((w) => {
       setWorld(w);
+      setLastDataSyncAt(Date.now());
       setLoadError(null);
       return true;
     }).catch((e) => {
@@ -166,6 +168,7 @@ export default function App() {
     if (mapRequest.current) return mapRequest.current;
     const request = api.getMapCitizens(session?.citizenId ?? null, 120).then((items) => {
       setCitizens(items);
+      setLastDataSyncAt(Date.now());
       return true;
     }).catch(() => {
       setLoadError('Gagal memuat data peta.');
@@ -361,7 +364,7 @@ export default function App() {
     };
   }, [refreshMe, refreshWorld]);
 
-  // Realtime Presence: Tamu online & titik hijau
+  // Presence Realtime tetap dimatikan untuk menghemat slot koneksi Free Tier.
   const presenceIdentity = useMemo(
     () =>
       me
@@ -563,7 +566,7 @@ export default function App() {
         {/* HUD atas: statistik negara (kiri) + kolom tombol taktil (kanan). Tengah peta tetap lega. */}
         <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-2 p-3">
           <div className="pointer-events-auto max-w-[62%]">
-            <Hud world={world} online={members.length} onProject={() => openEconomy('stasiun')}>
+            <Hud world={world} online={members.length} presenceEnabled={false} syncedAt={lastDataSyncAt} onProject={() => openEconomy('stasiun')}>
               {/* Dompet RpK: selalu terlihat di detik pertama */}
               <div className="relative">
                 <button
