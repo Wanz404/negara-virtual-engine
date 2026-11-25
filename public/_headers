@@ -1,8 +1,20 @@
+# Cloudflare Pages headers. Rules are combined top to bottom; "! Header" drops a value set by an earlier rule.
+
+# Every page (/, /index.html and SPA routes served via _redirects): always revalidate so phones and the
+# Instagram in-app browser pick up a new deploy immediately instead of an old index.html pointing at old bundles.
 /*
   X-Frame-Options: DENY
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: camera=(), microphone=(), geolocation=()
+  Cache-Control: no-cache, no-store, must-revalidate
 
+# Vite build output: file names carry a content hash, so they can be cached forever.
 /assets/*
+  ! Cache-Control
   Cache-Control: public, max-age=31536000, immutable
+
+# Emote stickers come from public/ WITHOUT a hash in the name: cache 1 day, revalidate after.
+/assets/emotes/*
+  ! Cache-Control
+  Cache-Control: public, max-age=86400, must-revalidate
