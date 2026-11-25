@@ -22,6 +22,40 @@ import { Geometry, LANDMARK_SLOTS, MONUMENT_SLOTS, PLOT, type Rect } from './geo
 import { attachInput } from './input';
 import { SpatialHash } from './spatialHash';
 import { chibiSprite } from './sprites';
+import { EMOTE_DURATION_MS, emoteDef, emoteImage } from '../lib/emotes';
+import type { EmoteKey } from '../services/types';
+
+interface ActiveEmote {
+  citizenId: string;
+  key: EmoteKey;
+  start: number;
+}
+
+const EMOTE_IN = 0.45; // detik: pop-in bounce
+const EMOTE_OUT_AT = 2.45; // detik: mulai exit
+const EMOTE_OUT = EMOTE_DURATION_MS / 1000 - EMOTE_OUT_AT;
+const MAX_EMOTES = 24;
+// Squash & stretch: scale(0) → (1.28,0.85) → (0.9,1.12) → (1.05,0.97) → 1
+const POP_KEYS: Array<[number, number, number]> = [
+  [0, 0, 0],
+  [0.4, 1.28, 0.85],
+  [0.65, 0.9, 1.12],
+  [0.85, 1.05, 0.97],
+  [1, 1, 1],
+];
+
+function popScale(p: number): [number, number] {
+  for (let i = 1; i < POP_KEYS.length; i++) {
+    const [t1, x1, y1] = POP_KEYS[i];
+    if (p <= t1) {
+      const [t0, x0, y0] = POP_KEYS[i - 1];
+      const k = (p - t0) / (t1 - t0);
+      const e = 1 - (1 - k) * (1 - k); // easeOutQuad per segmen
+      return [x0 + (x1 - x0) * e, y0 + (y1 - y0) * e];
+    }
+  }
+  return [1, 1];
+}
 
 export type TapTarget =
   | { type: 'plot'; plot: Plot }
@@ -95,6 +129,7 @@ export class MapEngine {
   private readonly ro: ResizeObserver;
   private initialFramed = false;
   private presentation = false;
+  private emotes: ActiveEmote[] = [];
 
   onTap: (target: TapTarget) => void = () => {};
   onVisibleRings: (rings: number[]) => void = () => {};
@@ -479,7 +514,188 @@ export class MapEngine {
     this.drawLabels(labels);
     if (!this.presentation) this.drawCoins(t);
     else this.coinHits = [];
+    this.drawEmotes(now);
     this.drawSpotlight(now);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Emote 3D di atas kepala warga (lapisan layar, ikut pan/zoom, 60fps)
+  // ---------------------------------------------------------------------------
+
+  /** Tampilkan emote di atas karakter warga. false bila warga sedang tidak ada di peta. */
+  showEmote(citizenId: string, key: EmoteKey): boolean {
+    if (!this.agentsMgr.agents.has(`c:${citizenId}`)) return false;
+    this.emotes = this.emotes.filter((e) => e.citizenId !== citizenId);
+    this.emotes.push({ citizenId, key, start: performance.now() });
+    if (this.emotes.length > MAX_EMOTES) this.emotes.shift();
+    return true;
+  }
+
+  private drawEmotes(now: number): void {
+    if (this.emotes.length === 0) return;
+    const ctx = this.ctx;
+    const cam = this.camera;
+    const z = cam.zoom;
+    const px = Math.max(46, Math.min(78, 40 + z * 22));
+    this.emotes = this.emotes.filter((e) => now - e.start < EMOTE_DURATION_MS);
+
+    for (const em of this.emotes) {
+      const a = this.agentsMgr.agents.get(`c:${em.citizenId}`);
+      if (!a) continue;
+      const charSize = a.isMe ? CHAR_SIZE * 1.2 : CHAR_SIZE;
+      const head = z < 0.3 ? cam.worldToScreen(a.x, a.y - 12) : cam.worldToScreen(a.x, a.y - charSize * 0.95);
+      const baseY = head.y - 2;
+      if (head.x < -px || head.x > cam.width + px || baseY < -20 || baseY > cam.height + px * 1.5) continue;
+
+      const T = Math.max(0, (now - em.start) / 1000);
+      let sx = 1;
+      let sy = 1;
+      let rot = 0;
+      let dx = 0;
+      let dy = 0;
+      let alpha = 1;
+      let glow = 0;
+      let glowColor = 'rgba(251,191,36,0.95)';
+      const u = Math.max(0, T - EMOTE_IN);
+      const k = Math.min(1, u / 0.18); // amplitudo aksi naik halus setelah pop-in
+
+      if (T < EMOTE_IN) {
+        [sx, sy] = popScale(T / EMOTE_IN);
+      } else {
+        switch (em.key) {
+          case 'laugh': {
+            const hop = Math.abs(Math.sin(u * Math.PI * 3.2));
+            dy = -hop * 13 * k;
+            sx = 1 + (1 - hop) * 0.09 * k;
+            sy = 1 - (1 - hop) * 0.09 * k;
+            rot = Math.sin(u * 9) * 0.2 * k;
+            break;
+          }
+          case 'cry':
+            dx = Math.sin(u * 48) * 1.6 * k;
+            dy = (Math.sin(u * 3.2) * 3 + 2) * k;
+            sy = 1 + Math.sin(u * 3.2) * 0.03 * k;
+            break;
+          case 'salute':
+            sx = sy = 1 + Math.sin(u * 4) * 0.025;
+            glow = (0.55 + 0.45 * Math.sin(u * 5)) * k;
+            break;
+          case 'fire': {
+            const pulse = Math.abs(Math.sin(u * 10));
+            sx = sy = 1 + pulse * 0.13 * k;
+            dx = Math.sin(u * 61) * 1.7 * k;
+            dy = Math.cos(u * 53) * 1.7 * k;
+            glow = (0.4 + pulse * 0.6) * k;
+            glowColor = 'rgba(249,115,22,0.95)';
+            break;
+          }
+          case 'coin': {
+            const hop = Math.abs(Math.sin(u * 6));
+            dy = -hop * 8 * k;
+            rot = Math.sin(u * 5) * 0.28 * k;
+            sx = 1 - (1 - Math.abs(Math.cos(u * 5))) * 0.12 * k;
+            glow = 0.35 * k;
+            break;
+          }
+          case 'angry': {
+            const burst = 0.45 + 0.55 * Math.abs(Math.sin(u * 4.2));
+            dx = Math.sin(u * 58) * 5 * burst * k;
+            rot = Math.sin(u * 58) * 0.06 * burst * k;
+            glow = 0.5 * burst * k;
+            glowColor = 'rgba(239,68,68,0.95)';
+            break;
+          }
+        }
+        if (T >= EMOTE_OUT_AT) {
+          const p = Math.min(1, (T - EMOTE_OUT_AT) / EMOTE_OUT);
+          const e = p * p * (3 - 2 * p);
+          dy -= 20 * e;
+          sx *= 1 - 0.4 * e;
+          sy *= 1 - 0.4 * e;
+          alpha = 1 - e;
+          glow *= 1 - e;
+        }
+      }
+
+      const x = head.x + dx;
+      const y = baseY + dy;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(x, y);
+      ctx.rotate(rot);
+      ctx.scale(sx, sy);
+      if (glow > 0.01) {
+        ctx.shadowColor = glowColor;
+        ctx.shadowBlur = 6 + glow * 16;
+      }
+      const img = emoteImage(em.key);
+      if (img) ctx.drawImage(img, -px / 2, -px, px, px);
+      else {
+        ctx.font = `${Math.round(px * 0.78)}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(emoteDef(em.key).emoji, 0, 0);
+      }
+      ctx.restore();
+
+      // Partikel kecil (tanpa scale) — air mata, kilau emas
+      if (T >= EMOTE_IN && alpha > 0.05) this.drawEmoteParticles(em.key, x, y, px, u, alpha);
+    }
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  private drawEmoteParticles(key: EmoteKey, x: number, y: number, px: number, u: number, alpha: number): void {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    if (key === 'cry') {
+      ctx.fillStyle = '#60a5fa';
+      for (let i = 0; i < 2; i++) {
+        const ph = (u * 1.6 + i * 0.5) % 1;
+        const side = i === 0 ? -1 : 1;
+        const tx = x + side * px * 0.28 + side * ph * 6;
+        const ty = y - px * 0.55 + ph * px * 0.5;
+        ctx.globalAlpha = alpha * (1 - ph);
+        ctx.beginPath();
+        ctx.ellipse(tx, ty, 2.4, 3.6, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else if (key === 'salute' || key === 'coin') {
+      ctx.fillStyle = '#fde047';
+      const n = key === 'coin' ? 3 : 4;
+      for (let i = 0; i < n; i++) {
+        const ang = u * 2.2 + (i / n) * Math.PI * 2;
+        const r = px * 0.62;
+        const sxp = x + Math.cos(ang) * r;
+        const syp = y - px * 0.5 + Math.sin(ang) * r * 0.55;
+        const s = 2.5 + 2 * Math.abs(Math.sin(u * 6 + i));
+        ctx.globalAlpha = alpha * (0.5 + 0.5 * Math.abs(Math.sin(u * 5 + i)));
+        ctx.beginPath();
+        ctx.moveTo(sxp, syp - s * 1.6);
+        ctx.lineTo(sxp + s * 0.45, syp - s * 0.45);
+        ctx.lineTo(sxp + s * 1.6, syp);
+        ctx.lineTo(sxp + s * 0.45, syp + s * 0.45);
+        ctx.lineTo(sxp, syp + s * 1.6);
+        ctx.lineTo(sxp - s * 0.45, syp + s * 0.45);
+        ctx.lineTo(sxp - s * 1.6, syp);
+        ctx.lineTo(sxp - s * 0.45, syp - s * 0.45);
+        ctx.closePath();
+        ctx.fill();
+      }
+    } else if (key === 'angry') {
+      // Uap kepala marah
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      for (let i = 0; i < 2; i++) {
+        const ph = (u * 1.8 + i * 0.5) % 1;
+        const side = i === 0 ? -1 : 1;
+        ctx.globalAlpha = alpha * (1 - ph) * 0.9;
+        ctx.beginPath();
+        ctx.arc(x + side * (px * 0.42 + ph * 10), y - px * 0.45 - ph * 6, 3 + ph * 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
   }
 
   private textWidth(text: string, font: string): number {

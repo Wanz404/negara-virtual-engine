@@ -2,6 +2,43 @@
 
 let ctx: AudioContext | null = null;
 
+// ---------------------------------------------------------------------------
+// Mute / Unmute SFX global (tersimpan di localStorage, dipakai HUD + emoteSfx)
+// ---------------------------------------------------------------------------
+const MUTE_KEY = 'nv:sfx-muted';
+let muted = (() => {
+  try {
+    return localStorage.getItem(MUTE_KEY) === '1';
+  } catch {
+    return false;
+  }
+})();
+const muteListeners = new Set<(m: boolean) => void>();
+
+export function isSfxMuted(): boolean {
+  return muted;
+}
+
+export function setSfxMuted(next: boolean): void {
+  muted = next;
+  try {
+    localStorage.setItem(MUTE_KEY, next ? '1' : '0');
+  } catch {
+    // storage diblokir → hanya berlaku di tab ini
+  }
+  muteListeners.forEach((fn) => fn(next));
+}
+
+export function onSfxMuteChange(fn: (m: boolean) => void): () => void {
+  muteListeners.add(fn);
+  return () => muteListeners.delete(fn);
+}
+
+/** AudioContext bersama (dipakai juga oleh utils/emoteSfx). Null bila tidak didukung. */
+export function getAudioContext(): AudioContext | null {
+  return audio();
+}
+
 function audio(): AudioContext | null {
   try {
     if (!ctx) {
@@ -17,6 +54,7 @@ function audio(): AudioContext | null {
 }
 
 function tone(freq: number, start: number, dur: number, type: OscillatorType = 'triangle', gain = 0.12): void {
+  if (muted) return;
   const a = audio();
   if (!a) return;
   const osc = a.createOscillator();
@@ -34,7 +72,35 @@ function tone(freq: number, start: number, dur: number, type: OscillatorType = '
 
 /** Panggil saat interaksi user pertama agar audio diizinkan browser (iOS / IG in-app). */
 export function unlockAudio(): void {
-  audio();
+  const a = audio();
+  if (!a) return;
+  try {
+    // iOS Safari: memutar buffer senyap di dalam gesture user "membuka kunci" output audio.
+    const src = a.createBufferSource();
+    src.buffer = a.createBuffer(1, 1, 22050);
+    src.connect(a.destination);
+    src.start(0);
+  } catch {
+    // abaikan
+  }
+}
+
+let unlockInstalled = false;
+/** Pasang listener sekali: gesture pertama (tap/klik/tombol) membuka kunci AudioContext. */
+export function installAudioUnlock(): void {
+  if (unlockInstalled || typeof window === 'undefined') return;
+  unlockInstalled = true;
+  const events = ['pointerdown', 'touchend', 'keydown'] as const;
+  const handler = () => {
+    unlockAudio();
+    if (ctx && ctx.state === 'running') events.forEach((e) => window.removeEventListener(e, handler, true));
+  };
+  events.forEach((e) => window.addEventListener(e, handler, true));
+}
+
+/** Micro-click lembut untuk tombol HUD / buka Bottom Sheet. */
+export function playClick(): void {
+  tone(1250, 0, 0.035, 'sine', 0.035);
 }
 
 export function playTick(): void {

@@ -1,8 +1,9 @@
 import { createClient, type RealtimeChannel, type SupabaseClient } from '@supabase/supabase-js';
 import type { WorldConfig } from '../configs/types';
-import { mapCitizen, mapDonor, mapLeaderboard, mapMyCitizen, mapNews, mapPlot, mapPoll, mapWorld } from './mappers';
+import { mapChat, mapCitizen, mapDonor, mapLeaderboard, mapMyCitizen, mapNews, mapPlot, mapPoll, mapWorld } from './mappers';
 import {
   ApiError,
+  type EmoteEvent,
   type NationApi,
   type PresenceIdentity,
   type PresenceMember,
@@ -346,6 +347,67 @@ export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapter
       return () => {
         void channel.untrack();
         void sb.removeChannel(channel);
+      };
+    },
+
+    // --- Upgrade v2: Edit Profil ---
+    async updateProfile(session, patch) {
+      return mapMyCitizen(
+        await rpc('update_citizen_profile', {
+          ...auth(session),
+          p_display_name: patch.displayName ?? null,
+          p_avatar_color: patch.avatarColor ?? null,
+          p_accessory: patch.accessory ?? null,
+        }),
+      );
+    },
+
+    // --- Upgrade v2: Global Chat (RLS: publik hanya SELECT 50 terbaru; kirim via RPC) ---
+    async getGlobalChat(limit = 50) {
+      const { data, error } = await sb
+        .from('global_chat_messages')
+        .select('id, citizen_id, seat_number, display_name, role_title, tier, message, emote_key, created_at')
+        .eq('world_id', W)
+        .order('id', { ascending: false })
+        .limit(Math.min(50, Math.max(1, limit)));
+      if (error) {
+        // Migrasi v2 belum dijalankan → chat kosong, aplikasi lain tetap jalan.
+        if (/global_chat_messages|does not exist|schema cache/i.test(error.message)) return [];
+        throw new ApiError(error.message);
+      }
+      return (data ?? []).map(mapChat).reverse();
+    },
+
+    async sendGlobalChat(session, message, emoteKey = null) {
+      return mapChat(await rpc('send_global_chat', { ...auth(session), p_message: message, p_emote_key: emoteKey }));
+    },
+
+    subscribeGlobalChat({ onInsert, onUpdate }) {
+      const channel: RealtimeChannel = sb
+        .channel(`gchat:${W}`)
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'global_chat_messages', filter: `world_id=eq.${W}` }, (p) =>
+          onInsert(mapChat(p.new as Record<string, unknown>)),
+        )
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'global_chat_messages', filter: `world_id=eq.${W}` }, (p) =>
+          onUpdate(mapChat(p.new as Record<string, unknown>)),
+        )
+        .subscribe();
+      return () => {
+        void sb.removeChannel(channel);
+      };
+    },
+
+    // --- Upgrade v2: Emote via Realtime Broadcast (ephemeral, tidak menyentuh tabel) ---
+    joinEmotes(onEmote) {
+      const channel: RealtimeChannel = sb.channel(`emotes:${W}`, { config: { broadcast: { self: false, ack: false } } });
+      channel.on('broadcast', { event: 'citizen_emote' }, ({ payload }) => onEmote(payload as EmoteEvent)).subscribe();
+      return {
+        send(e) {
+          void channel.send({ type: 'broadcast', event: 'citizen_emote', payload: e });
+        },
+        leave() {
+          void sb.removeChannel(channel);
+        },
       };
     },
   };

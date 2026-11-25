@@ -117,3 +117,234 @@ button:disabled {
     animation: none;
   }
 }
+
+/* ===========================================================================
+   Upgrade v2 — Game HUD taktil (crimson + emas), emote, chat
+   =========================================================================== */
+:root {
+  --hud-crimson: #c8102e;
+  --hud-crimson-dark: #7a0a1c;
+  --hud-gold: #fbbf24;
+  --hud-gold-deep: #b45309;
+  --spring: cubic-bezier(0.22, 1.4, 0.36, 1);
+}
+
+/* Efek tekan taktil generik */
+.tactile {
+  transition: transform 220ms var(--spring), filter 160ms ease;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.tactile:active {
+  transform: scale(0.95);
+  transition-duration: 70ms;
+}
+
+.hud-btn {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  width: 50px;
+  height: 50px;
+  border-radius: 16px;
+  color: #fff;
+  background: linear-gradient(180deg, #ef3a54 0%, var(--hud-crimson) 48%, var(--hud-crimson-dark) 100%);
+  border: 2px solid var(--hud-gold);
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.35),
+    inset 0 -3px 0 rgba(0, 0, 0, 0.25),
+    0 4px 0 var(--hud-gold-deep),
+    0 7px 14px rgba(0, 0, 0, 0.3);
+  transition: transform 260ms var(--spring), box-shadow 120ms ease;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.hud-btn:active {
+  transform: translateY(3px) scale(0.95);
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.25),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.25),
+    0 1px 0 var(--hud-gold-deep),
+    0 3px 6px rgba(0, 0, 0, 0.3);
+  transition-duration: 70ms;
+}
+.hud-btn .hud-ico {
+  font-size: 20px;
+  line-height: 1;
+  filter: drop-shadow(0 1px 0 rgba(0, 0, 0, 0.35));
+}
+.hud-btn .hud-lbl {
+  font-size: 8px;
+  line-height: 1;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #fde68a;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+.hud-btn.hud-gold {
+  color: #3b1d00;
+  background: linear-gradient(180deg, #fff1b8 0%, #fbbf24 50%, #d97706 100%);
+  border-color: #fff7d6;
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.6),
+    inset 0 -3px 0 rgba(0, 0, 0, 0.18),
+    0 4px 0 #92400e,
+    0 7px 14px rgba(0, 0, 0, 0.3);
+}
+.hud-btn.hud-gold .hud-lbl {
+  color: #7c2d12;
+  text-shadow: none;
+}
+.hud-btn.hud-lg {
+  width: 58px;
+  height: 58px;
+  border-radius: 20px;
+}
+.hud-btn.hud-lg .hud-ico {
+  font-size: 26px;
+}
+.hud-btn.hud-sm {
+  width: 40px;
+  height: 40px;
+  border-radius: 14px;
+}
+.hud-btn.hud-sm .hud-ico {
+  font-size: 17px;
+}
+.hud-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #22c55e;
+  border: 2px solid #fff;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 14px;
+  text-align: center;
+}
+.hud-badge.hud-badge-red {
+  background: #ef4444;
+}
+.hud-panel {
+  background: linear-gradient(180deg, rgba(122, 10, 28, 0.92), rgba(60, 6, 16, 0.92));
+  border: 1.5px solid rgba(251, 191, 36, 0.85);
+  color: #fff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 6px 18px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(6px);
+}
+
+/* Ring cooldown (conic) di tombol emote */
+.cooldown-ring {
+  position: absolute;
+  inset: -4px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: conic-gradient(rgba(255, 255, 255, 0.9) calc(var(--p, 0) * 1turn), transparent 0);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+}
+
+/* Emote picker */
+@keyframes picker-in {
+  0% {
+    transform: translateY(14px) scale(0.6);
+    opacity: 0;
+  }
+  70% {
+    transform: translateY(-3px) scale(1.04);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+.animate-picker-in {
+  animation: picker-in 380ms var(--spring) both;
+  transform-origin: bottom right;
+}
+.emote-chip {
+  transition: transform 260ms var(--spring);
+}
+.emote-chip:hover {
+  transform: translateY(-4px) scale(1.12) rotate(-4deg);
+}
+.emote-chip:active {
+  transform: scale(0.88);
+  transition-duration: 70ms;
+}
+
+/* Fallback DOM emote (warga yang sedang tidak tampil di peta) — 3 fase ~3 dtk */
+@keyframes emote-pop {
+  0% {
+    transform: scale(0);
+    opacity: 0;
+  }
+  6% {
+    transform: scale(1.28, 0.85);
+    opacity: 1;
+  }
+  10% {
+    transform: scale(0.9, 1.12);
+  }
+  13% {
+    transform: scale(1.05, 0.97);
+  }
+  16%,
+  82% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-18px) scale(0.6);
+    opacity: 0;
+  }
+}
+.animate-emote-pop {
+  animation: emote-pop 3s cubic-bezier(0.3, 0.9, 0.4, 1) forwards;
+}
+
+/* Chat */
+@keyframes chat-in {
+  from {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+.animate-chat-in {
+  animation: chat-in 260ms ease-out both;
+}
+@keyframes seat-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 4px rgba(251, 191, 36, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 12px rgba(251, 191, 36, 1);
+  }
+}
+.seat-glow {
+  animation: seat-glow 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-picker-in,
+  .seat-glow {
+    animation-duration: 0.01ms;
+  }
+}

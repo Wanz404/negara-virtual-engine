@@ -1,5 +1,7 @@
 import type {
+  ChatMessage,
   DonorRow,
+  EmoteKey,
   LeaderboardRow,
   MyCitizen,
   NewsItem,
@@ -68,6 +70,25 @@ export function mapMyCitizen(r: Row): MyCitizen {
     followRecheckRequestedAt: str(r.follow_recheck_requested_at),
     igChangedAt: str(r.ig_changed_at),
     hasRecoveryPin: Boolean(r.has_recovery_pin),
+    nameUpdatedAt: str(r.name_updated_at),
+    nameEditCount: num(r.name_edit_count),
+  };
+}
+
+const EMOTE_KEYS: EmoteKey[] = ['laugh', 'cry', 'salute', 'fire', 'coin', 'angry'];
+
+export function mapChat(r: Row): ChatMessage {
+  const ek = str(r.emote_key);
+  return {
+    id: num(r.id),
+    citizenId: r.citizen_id,
+    seatNumber: num(r.seat_number),
+    displayName: String(r.display_name ?? ''),
+    roleTitle: String(r.role_title ?? ''),
+    tier: String(r.tier ?? ''),
+    message: String(r.message ?? ''),
+    emoteKey: ek && (EMOTE_KEYS as string[]).includes(ek) ? (ek as EmoteKey) : null,
+    createdAt: r.created_at,
   };
 }
 

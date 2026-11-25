@@ -55,6 +55,9 @@ export interface MyCitizen extends PublicCitizen {
   followRecheckRequestedAt: string | null;
   igChangedAt: string | null;
   hasRecoveryPin: boolean;
+  /** Upgrade v2: terakhir ganti nama (cooldown 24 jam). Kosong jika belum pernah / DB lama. */
+  nameUpdatedAt?: string | null;
+  nameEditCount?: number;
 }
 
 export interface Session {
@@ -199,6 +202,44 @@ export interface PresenceIdentity {
   color: string;
 }
 
+// ---------------------------------------------------------------------------
+// Upgrade v2: Edit Profil, Global Chat, Emote Broadcast
+// ---------------------------------------------------------------------------
+
+export type EmoteKey = 'laugh' | 'cry' | 'salute' | 'fire' | 'coin' | 'angry';
+
+export interface ProfilePatch {
+  displayName?: string;
+  avatarColor?: string;
+  accessory?: Accessory;
+}
+
+export interface ChatMessage {
+  id: number;
+  citizenId: string;
+  seatNumber: number;
+  displayName: string;
+  roleTitle: string;
+  tier: string;
+  message: string;
+  emoteKey: EmoteKey | null;
+  createdAt: string;
+}
+
+/** Payload ringan Supabase Realtime Broadcast (event 'citizen_emote'), tidak disimpan di DB. */
+export interface EmoteEvent {
+  citizen_id: string;
+  seat_number: number;
+  display_name: string;
+  emote_key: EmoteKey;
+  timestamp: number;
+}
+
+export interface EmoteChannel {
+  send(e: EmoteEvent): void;
+  leave(): void;
+}
+
 export type ModerationTarget = 'status' | 'building_name' | 'news';
 
 /**
@@ -261,6 +302,16 @@ export interface NationApi {
 
   // --- Realtime Presence (Tamu online) ---
   joinPresence(me: PresenceIdentity, onSync: (members: PresenceMember[]) => void): () => void;
+
+  // --- Upgrade v2 ---
+  /** Ganti nama (1x / 24 jam) & tampilan avatar. Kursi, jabatan, tier, ring, tgl gabung, status follow dikunci server. */
+  updateProfile(session: Session, patch: ProfilePatch): Promise<MyCitizen>;
+  getGlobalChat(limit?: number): Promise<ChatMessage[]>;
+  sendGlobalChat(session: Session, message: string, emoteKey?: EmoteKey | null): Promise<ChatMessage>;
+  /** INSERT (pesan baru) & UPDATE (sinkron ganti nama). Mengembalikan fungsi cleanup. */
+  subscribeGlobalChat(handlers: { onInsert: (m: ChatMessage) => void; onUpdate: (m: ChatMessage) => void }): () => void;
+  /** Realtime Broadcast emote (0 beban database). */
+  joinEmotes(onEmote: (e: EmoteEvent) => void): EmoteChannel;
 }
 
 export class ApiError extends Error {

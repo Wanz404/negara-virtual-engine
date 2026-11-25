@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import { WORLD, type LandmarkKind } from '../configs';
 import { MapEngine, type MapData, type TapTarget } from '../engine';
+import type { EmoteKey } from '../services/types';
 
 export interface MapViewHandle {
   locateCitizen(id: string): boolean;
@@ -11,6 +12,8 @@ export interface MapViewHandle {
   setHighlight(code: string | null): void;
   locateLandmark(kind: LandmarkKind, zoom?: number): void;
   setPresentation(on: boolean): void;
+  /** Emote di atas kepala warga; false bila warga tidak tampil di peta. */
+  showEmote(citizenId: string, key: EmoteKey): boolean;
 }
 
 /**
@@ -50,6 +53,7 @@ export const MapView = forwardRef<MapViewHandle, { data: MapData; onTap: (t: Tap
       setHighlight: (code) => engineRef.current?.setHighlight(code),
       locateLandmark: (kind, zoom) => engineRef.current?.locateLandmark(kind, zoom),
       setPresentation: (on) => engineRef.current?.setPresentation(on),
+      showEmote: (id, key) => engineRef.current?.showEmote(id, key) ?? false,
     }));
 
     return <canvas ref={canvasRef} className="block h-full w-full touch-none select-none" aria-label={`Peta ${WORLD.copy.nationName}`} />;

@@ -22,10 +22,24 @@ import {
 } from '../lib/game';
 import { formatCitizenNumber, formatCitizenTag, formatDuration } from '../lib/format';
 import { containsProfanity } from '../lib/profanity';
-import { cleanDisplayName, normalizeIgUsername, validateFreeText, validateIgUsername, isHexColor } from '../lib/validation';
+import {
+  CHAT_COOLDOWN_MS,
+  NAME_EDIT_COOLDOWN_MS,
+  cleanDisplayName,
+  cleanProfileText,
+  isHexColor,
+  normalizeIgUsername,
+  validateChatText,
+  validateFreeText,
+  validateIgUsername,
+  validateProfileName,
+} from '../lib/validation';
+import { mapChat } from './mappers';
 import {
   ApiError,
   type DonorRow,
+  type EmoteEvent,
+  type EmoteKey,
   type LeaderboardRow,
   type MyCitizen,
   type NationApi,
@@ -49,6 +63,19 @@ interface SbCitizen extends MyCitizen {
   recoveryFailedAttempts: number;
   recoveryLockedUntil: string | null;
   originalTierId: string | null;
+  lastChatAt?: string | null;
+}
+
+interface ChatRow {
+  id: number;
+  citizen_id: string;
+  seat_number: number;
+  display_name: string;
+  role_title: string;
+  tier: string;
+  message: string;
+  emote_key: EmoteKey | null;
+  created_at: string;
 }
 
 interface SbPoll {
@@ -106,6 +133,34 @@ const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export function createSandboxAdapter(config: WorldConfig): SandboxApi {
   const KEY = `nv:sandbox:${config.worldId}`;
+  const CHAT_KEY = `nv:sandbox:${config.worldId}:chat`;
+  const LOCAL_CHAT_EVENT = `nv-chat-local:${config.worldId}`;
+  const EMOTES_OK: EmoteKey[] = ['laugh', 'cry', 'salute', 'fire', 'coin', 'angry'];
+  const chatOut = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel(`nv-chat:${config.worldId}`) : null;
+
+  /** Kirim event chat ke tab lain (BroadcastChannel) + ke subscriber di tab ini sendiri. */
+  function chatBus(msg: { type: 'insert' | 'update'; row: ChatRow }): void {
+    chatOut?.postMessage(msg);
+    window.dispatchEvent(new CustomEvent(LOCAL_CHAT_EVENT, { detail: msg }));
+  }
+
+  function loadChat(): ChatRow[] {
+    try {
+      const raw = localStorage.getItem(CHAT_KEY);
+      const rows = raw ? (JSON.parse(raw) as ChatRow[]) : [];
+      return Array.isArray(rows) ? rows : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function saveChat(rows: ChatRow[]): void {
+    try {
+      localStorage.setItem(CHAT_KEY, JSON.stringify(rows.slice(-150)));
+    } catch {
+      // abaikan
+    }
+  }
   const econ = effectiveEconomy(config, 'sandbox');
   const cur = config.currency.code;
 
@@ -1097,9 +1152,121 @@ export function createSandboxAdapter(config: WorldConfig): SandboxApi {
     reset: async () => {
       try {
         localStorage.removeItem(KEY);
+        localStorage.removeItem(CHAT_KEY);
       } catch {
         // abaikan
       }
+    },
+
+    // --- Upgrade v2: Edit Profil ---
+    updateProfile: (session, patch) =>
+      tx((db) => {
+        const c = auth(db, session);
+        let changed = false;
+        let nameChanged = false;
+        const oldName = c.username;
+        if (patch.displayName !== undefined) {
+          const err = validateProfileName(patch.displayName);
+          if (err) fail(err);
+          const name = cleanProfileText(patch.displayName);
+          if (name !== c.username) {
+            const next = c.nameUpdatedAt ? new Date(c.nameUpdatedAt).getTime() + NAME_EDIT_COOLDOWN_MS : 0;
+            if (next > Date.now()) fail(`Nama baru saja diganti. Bisa ganti lagi dalam ${formatDuration(next - Date.now())}.`);
+            c.username = name;
+            c.nameUpdatedAt = nowIso();
+            c.nameEditCount = (c.nameEditCount ?? 0) + 1;
+            changed = nameChanged = true;
+          }
+        }
+        if (patch.avatarColor !== undefined && patch.avatarColor !== c.avatarColor) {
+          if (!isHexColor(patch.avatarColor)) fail('Warna avatar tidak valid.');
+          c.avatarColor = patch.avatarColor;
+          changed = true;
+        }
+        if (patch.accessory !== undefined && patch.accessory !== c.avatarStyle?.accessory) {
+          if (!config.registration.avatarAccessories.includes(patch.accessory)) fail('Aksesori avatar tidak tersedia.');
+          c.avatarStyle = { ...c.avatarStyle, accessory: patch.accessory };
+          changed = true;
+        }
+        if (!changed) fail('Tidak ada perubahan untuk disimpan.');
+        c.lastActiveAt = nowIso();
+        if (nameChanged) {
+          for (const p of db.plots) if (p.ownerCitizenId === c.id) p.ownerTag = tagOf(c);
+          const chat = loadChat();
+          const mine = chat.filter((m) => m.citizen_id === c.id);
+          for (const m of mine) m.display_name = c.username;
+          if (mine.length) {
+            saveChat(chat);
+            for (const m of mine) chatBus({ type: 'update', row: m });
+          }
+          news(db, c.id, 'system', `🪪 Warga #${String(c.citizenNumber).padStart(4, '0')} ganti nama: ${oldName} → ${c.username}`);
+        }
+        return toPrivate(c);
+      }),
+
+    // --- Upgrade v2: Global Chat (localStorage + BroadcastChannel antar-tab) ---
+    getGlobalChat: async (limit = 50) => {
+      await delay(80);
+      return loadChat()
+        .slice(-Math.min(50, limit))
+        .map((r) => mapChat(r as unknown as Record<string, unknown>));
+    },
+
+    sendGlobalChat: async (session, message, emoteKey = null) => {
+      const row = await tx((db) => {
+        const c = auth(db, session);
+        if (c.followStatus === 'impeached') fail('Warga yang dimakzulkan tidak bisa mengirim chat.');
+        const last = c.lastChatAt ? new Date(c.lastChatAt).getTime() : 0;
+        if (Date.now() - last < CHAT_COOLDOWN_MS) fail(`Pelan-pelan, tunggu ${Math.ceil((last + CHAT_COOLDOWN_MS - Date.now()) / 1000)} detik lagi.`);
+        const ek = emoteKey && EMOTES_OK.includes(emoteKey) ? emoteKey : null;
+        if (emoteKey && !ek) fail('Emote tidak dikenal.');
+        const err = validateChatText(message, !!ek);
+        if (err) fail(err);
+        c.lastChatAt = nowIso();
+        c.lastActiveAt = nowIso();
+        const chat = loadChat();
+        const r: ChatRow = {
+          id: (chat[chat.length - 1]?.id ?? 0) + 1,
+          citizen_id: c.id,
+          seat_number: c.citizenNumber,
+          display_name: c.username,
+          role_title: c.roleTitle,
+          tier: c.tierId,
+          message: cleanProfileText(message),
+          emote_key: ek,
+          created_at: nowIso(),
+        };
+        saveChat([...chat, r]); // auto-prune 150 di saveChat
+        return r;
+      });
+      chatBus({ type: 'insert', row });
+      return mapChat(row as unknown as Record<string, unknown>);
+    },
+
+    subscribeGlobalChat({ onInsert, onUpdate }) {
+      const handle = (msg: { type: 'insert' | 'update'; row: ChatRow }) => {
+        const m = mapChat(msg.row as unknown as Record<string, unknown>);
+        if (msg.type === 'insert') onInsert(m);
+        else onUpdate(m);
+      };
+      const bc = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel(`nv-chat:${config.worldId}`) : null;
+      if (bc) bc.onmessage = (ev: MessageEvent) => handle(ev.data);
+      const local = (ev: Event) => handle((ev as CustomEvent).detail);
+      window.addEventListener(LOCAL_CHAT_EVENT, local);
+      return () => {
+        bc?.close();
+        window.removeEventListener(LOCAL_CHAT_EVENT, local);
+      };
+    },
+
+    // --- Upgrade v2: Emote broadcast antar-tab ---
+    joinEmotes(onEmote) {
+      const bc = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel(`nv-emotes:${config.worldId}`) : null;
+      if (bc) bc.onmessage = (ev: MessageEvent) => onEmote(ev.data as EmoteEvent);
+      return {
+        send: (e) => bc?.postMessage(e),
+        leave: () => bc?.close(),
+      };
     },
   };
 

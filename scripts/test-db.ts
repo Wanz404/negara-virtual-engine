@@ -71,6 +71,8 @@ await db.exec(`
 await db.exec(readFileSync(resolve(root, 'supabase/migrations/001_init.sql'), 'utf8'));
 await db.exec(readFileSync(resolve(root, 'supabase/migrations/002_worker_checks.sql'), 'utf8'));
 await db.exec(buildSeedSql(Object.values(WORLDS)));
+const upgradeV2 = readFileSync(resolve(root, 'supabase/migrations/upgrade_v2_social_ux.sql'), 'utf8');
+await db.exec(upgradeV2);
 const worldCount = await one<{ n: number }>('SELECT count(*)::int AS n FROM world_states');
 check('10 dunia ter-seed', worldCount.n === 10, worldCount);
 const zero = await one<{ n: number }>('SELECT count(*)::int AS n FROM citizens');
@@ -355,6 +357,80 @@ console.log('\n▶ Geometri peta (engine kanvas)');
   check('Titik di jalan lingkar tidak terdeteksi sebagai kavling', geo.worldToGrid((b.inner + b.outer) / 2, 0) === null);
   const water = geo.boundaryBand(2);
   check('Selat Ring 2→3 lebih lebar dari jalan biasa', water.outer - water.inner > (b.outer - b.inner) * 2);
+}
+
+// -----------------------------------------------------------------------------
+console.log('\n▶ Upgrade v2: Edit Profil & Global Chat');
+{
+  await db.exec(upgradeV2); // dijalankan ulang → harus idempotent
+  check('upgrade_v2_social_ux.sql aman dijalankan 2x', true);
+  const a = await register('profil_alpha', 'Alpha');
+  const b = await register('profil_bravo', 'Bravo');
+  const before = await one<any>('SELECT citizen_number, role_title, tier_id, joined_day, created_at, follow_status FROM citizens WHERE id = $1', [a.id]);
+
+  const r1 = await rpc('update_citizen_profile', [W, a.id, a.secret_token, '  Alpha    Baru ', null, null]);
+  check('Ganti nama + trim spasi ganda', r1.username === 'Alpha Baru' && r1.name_edit_count === 1, r1.username);
+  const after = await one<any>('SELECT citizen_number, role_title, tier_id, joined_day, created_at, follow_status FROM citizens WHERE id = $1', [a.id]);
+  check('Kursi/jabatan/tier/tgl gabung/status follow tidak berubah', JSON.stringify(before) === JSON.stringify(after));
+  await expectError('Cooldown 24 jam ganti nama', rpc('update_citizen_profile', [W, a.id, a.secret_token, 'Alpha Lagi', null, null]), 'Bisa ganti lagi dalam');
+  await expectError('Token salah ditolak (anti-bajak)', rpc('update_citizen_profile', [W, a.id, b.secret_token, 'Hacker', null, null]), 'Sesi warga tidak valid');
+  await expectError('Nama 1 karakter ditolak', rpc('update_citizen_profile', [W, b.id, b.secret_token, 'x', null, null]), '2–24');
+  await expectError('Nama 25 karakter ditolak', rpc('update_citizen_profile', [W, b.id, b.secret_token, 'x'.repeat(25), null, null]), '2–24');
+  await expectError('Nama kosong / zero-width ditolak', rpc('update_citizen_profile', [W, b.id, b.secret_token, '​ ​', null, null]), '2–24');
+  await expectError('Tag HTML ditolak', rpc('update_citizen_profile', [W, b.id, b.secret_token, '<b>Bravo</b>', null, null]), 'karakter');
+  await expectError('Nama tanpa huruf/angka ditolak', rpc('update_citizen_profile', [W, b.id, b.secret_token, '...', null, null]), 'huruf atau angka');
+  await expectError('Nama kasar ditolak', rpc('update_citizen_profile', [W, b.id, b.secret_token, 'b4ngs4t', null, null]), 'tidak diizinkan');
+  await expectError('Tanpa perubahan ditolak', rpc('update_citizen_profile', [W, b.id, b.secret_token, 'Bravo', null, null]), 'Tidak ada perubahan');
+  const rc = await rpc('update_citizen_profile', [W, a.id, a.secret_token, null, '#123abc', 'cap']);
+  check('Warna & aksesori tetap bisa diubah saat cooldown nama', rc.avatar_color === '#123abc' && rc.avatar_style.accessory === 'cap');
+  await expectError('Aksesori di luar daftar ditolak', rpc('update_citizen_profile', [W, a.id, a.secret_token, null, null, 'crown']), 'tidak tersedia');
+
+  // Papan nama kavling ikut sinkron
+  await db.query(`UPDATE land_plots SET owner_citizen_id = $1, owner_tag = 'Bravo | 999' WHERE id = (SELECT id FROM land_plots WHERE world_id = $2 AND owner_citizen_id IS NULL LIMIT 1)`, [b.id, W]);
+
+  // Chat
+  const m1 = await rpc('send_global_chat', [W, b.id, b.secret_token, '  halo   warga  ', null]);
+  check('Kirim chat (snapshot kursi, nama, jabatan, tier)', m1.message === 'halo warga' && m1.seat_number === b.citizen_number && m1.display_name === 'Bravo' && m1.tier === b.tier_id, m1);
+  await expectError('Cooldown chat 4 detik', rpc('send_global_chat', [W, b.id, b.secret_token, 'spam', null]), 'tunggu');
+  const reset = () => db.query('UPDATE citizens SET last_chat_at = NULL WHERE id = $1', [b.id]);
+  await reset();
+  await expectError('Chat 141 karakter ditolak', rpc('send_global_chat', [W, b.id, b.secret_token, 'a'.repeat(141), null]), '140');
+  await expectError('Chat tag HTML ditolak', rpc('send_global_chat', [W, b.id, b.secret_token, '<script>alert(1)</script>', null]), 'karakter');
+  await expectError('Chat kosong ditolak', rpc('send_global_chat', [W, b.id, b.secret_token, '   ', null]), 'kosong');
+  await expectError('Emote asing ditolak', rpc('send_global_chat', [W, b.id, b.secret_token, '', 'dance']), 'tidak dikenal');
+  await expectError('Token salah tidak bisa chat', rpc('send_global_chat', [W, b.id, a.secret_token, 'hai', null]), 'Sesi warga tidak valid');
+  const st = await rpc('send_global_chat', [W, b.id, b.secret_token, '', 'fire']);
+  check('Kirim stiker emote tanpa teks', st.emote_key === 'fire' && st.message === '');
+
+  // Rename → sinkron ke chat & owner_tag
+  const rb = await rpc('update_citizen_profile', [W, b.id, b.secret_token, 'Bravo Keren', null, null]);
+  const chatNames = await one<any>('SELECT array_agg(DISTINCT display_name) AS n FROM global_chat_messages WHERE citizen_id = $1', [b.id]);
+  check('Ganti nama menyinkronkan riwayat chat', chatNames.n.length === 1 && chatNames.n[0] === 'Bravo Keren', chatNames);
+  const tag = await one<any>('SELECT owner_tag FROM land_plots WHERE owner_citizen_id = $1', [b.id]);
+  check('Ganti nama menyinkronkan papan nama kavling', tag.owner_tag === `Bravo Keren | ${String(rb.citizen_number).padStart(3, '0')}`, tag);
+  const newsRow = await one<any>(`SELECT message FROM news_feed WHERE citizen_id = $1 AND category = 'system' ORDER BY id DESC LIMIT 1`, [b.id]);
+  check('Jejak ganti nama di berita', String(newsRow?.message).includes('Bravo → Bravo Keren'), newsRow);
+
+  // Auto-prune 150
+  await db.query(
+    `INSERT INTO global_chat_messages (world_id, citizen_id, seat_number, display_name, message)
+     SELECT $1, $2, 1, 'Bulk', 'pesan ' || g FROM generate_series(1, 220) g`,
+    [W, a.id],
+  );
+  await reset();
+  await rpc('send_global_chat', [W, b.id, b.secret_token, 'pesan terbaru', null]);
+  const cnt = await one<{ n: number }>('SELECT count(*)::int AS n FROM global_chat_messages WHERE world_id = $1', [W]);
+  check('Auto-prune: maksimal 150 pesan per dunia', cnt.n === 150, cnt);
+
+  await db.exec('SET ROLE anon');
+  const vis = await db.query<any>('SELECT id, message FROM global_chat_messages WHERE world_id = $1 ORDER BY id DESC', [W]);
+  check('anon hanya bisa baca 50 pesan terbaru', vis.rows.length === 50 && vis.rows[0].message === 'pesan terbaru', vis.rows.length);
+  await expectError('anon tidak bisa INSERT chat langsung', db.query(`INSERT INTO global_chat_messages (world_id, citizen_id, seat_number, display_name, message) VALUES ('${W}', '${a.id}', 1, 'x', 'x')`), 'permission denied');
+  await expectError('anon tidak bisa DELETE chat', db.query('DELETE FROM global_chat_messages'), 'permission denied');
+  await expectError('anon tidak bisa UPDATE nama langsung', db.query(`UPDATE citizens SET username = 'x'`), 'permission denied');
+  const viaRpc = await db.query<any>(`SELECT public.update_citizen_profile($1, $2, $3, NULL, '#00ff00', NULL) AS r`, [W, a.id, a.secret_token]);
+  check('anon boleh memanggil RPC update_citizen_profile', viaRpc.rows[0].r.avatar_color === '#00ff00');
+  await db.exec('RESET ROLE');
 }
 
 console.log(`\n${failed === 0 ? '✅' : '❌'} ${passed} lulus, ${failed} gagal\n`);

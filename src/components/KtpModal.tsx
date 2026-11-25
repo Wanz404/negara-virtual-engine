@@ -5,6 +5,7 @@ import { formatDuration, formatRelative } from '../lib/format';
 import { normalizeIgUsername, validateIgUsername } from '../lib/validation';
 import { ktpFileName, renderKtpCanvas } from '../lib/ktpCanvas';
 import { api, type MyCitizen, type Session } from '../services';
+import { EditProfileForm } from './EditProfile';
 import { KtpCardView } from './KtpCardView';
 import { Button, Modal, errorMessage, inputClass } from './ui';
 
@@ -51,6 +52,7 @@ export function KtpModal({
 }) {
   const now = useNow();
   const [editing, setEditing] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [newIg, setNewIg] = useState('');
   const [pin, setPin] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
@@ -60,6 +62,8 @@ export function KtpModal({
   const newIgError = newIg ? validateIgUsername(newIg, WORLD.igAccountHandle) : null;
 
   const [preview, setPreview] = useState<string | null>(null);
+  // Pratinjau PNG lama dibuang saat nama/tampilan berubah → Simpan PNG berikutnya pakai data terbaru.
+  useEffect(() => setPreview(null), [me.username, me.avatarColor, me.avatarStyle?.accessory]);
   const inInstagram = typeof navigator !== 'undefined' && /Instagram|FBAN|FBAV/i.test(navigator.userAgent);
 
   /**
@@ -184,15 +188,24 @@ export function KtpModal({
             </div>
           </div>
         ) : (
-          me.followStatus !== 'impeached' && (
-            <div className="mt-3 flex gap-2">
-              <Button variant="secondary" className="flex-1" disabled={igChangeAt > now} onClick={() => setEditing(true)}>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <Button
+              variant={profileOpen ? 'primary' : 'secondary'}
+              className={`px-2 ${me.followStatus === 'impeached' ? 'col-span-2' : ''}`}
+              onClick={() => setProfileOpen((o) => !o)}
+              aria-expanded={profileOpen}
+            >
+              👤 Edit Profil
+            </Button>
+            {me.followStatus !== 'impeached' && (
+              <Button variant="secondary" className="px-2" disabled={igChangeAt > now} onClick={() => setEditing(true)}>
                 ✏️ Ganti Instagram{igChangeAt > now ? ` (${formatDuration(igChangeAt - now)})` : ''}
               </Button>
-              {me.followStatus !== 'verified' && (
+            )}
+            {me.followStatus !== 'impeached' && me.followStatus !== 'verified' && (
                 <Button
                   variant="secondary"
-                  className="flex-1"
+                  className="col-span-2"
                   loading={busy === 'recheck'}
                   disabled={recheckAt > now}
                   onClick={() =>
@@ -204,9 +217,20 @@ export function KtpModal({
                 >
                   🔄 Cek Ulang{recheckAt > now ? ` (${formatDuration(recheckAt - now)})` : ''}
                 </Button>
-              )}
-            </div>
-          )
+            )}
+          </div>
+        )}
+        {profileOpen && !editing && (
+          <EditProfileForm
+            me={me}
+            session={session}
+            toast={toast}
+            onCancel={() => setProfileOpen(false)}
+            onSaved={(c) => {
+              onUpdated(c);
+              setProfileOpen(false);
+            }}
+          />
         )}
       </section>
 

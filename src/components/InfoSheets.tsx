@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { WORLD } from '../configs';
 import { findTier } from '../lib/game';
 import { formatCitizenNumber, formatCoins, formatRelative } from '../lib/format';
@@ -17,12 +17,16 @@ const FOLLOW_BADGE: Record<PublicCitizen['followStatus'], { text: string; cls: s
   impeached: { text: 'Dimakzulkan 🚨', cls: 'bg-gray-200 text-gray-700' },
 };
 
-export function CitizenSheet({ citizen, onClose, onLocate }: { citizen: PublicCitizen | null; onClose: () => void; onLocate: (id: string) => void }) {
+export function CitizenSheet({ citizen: live, onClose, onLocate }: { citizen: PublicCitizen | null; onClose: () => void; onLocate: (id: string) => void }) {
+  // Simpan warga terakhir agar Bottom Sheet sempat beranimasi turun saat ditutup.
+  const lastRef = useRef<PublicCitizen | null>(live);
+  if (live) lastRef.current = live;
+  const citizen = live ?? lastRef.current;
   if (!citizen) return null;
   const tier = findTier(WORLD, citizen.tierId);
   const badge = FOLLOW_BADGE[citizen.followStatus];
   return (
-    <Modal open onClose={onClose} title="👤 Profil Warga">
+    <Modal open={!!live} onClose={onClose} title="👤 Profil Warga">
       <div className="flex items-center gap-3">
         <div className="rounded-2xl p-1" style={{ background: tier.ktpBorder }}>
           <div className="rounded-xl bg-white">

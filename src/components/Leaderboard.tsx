@@ -100,6 +100,12 @@ async function fetchSeatRange(start: number, end: number): Promise<PublicCitizen
   return out;
 }
 
+/** Auto-sync Edit Profil: baris milik sendiri selalu memakai nama/tampilan terbaru tanpa refetch. */
+function withMe<T extends PublicCitizen | undefined>(c: T, me: MyCitizen | null): T {
+  if (!c || !me || c.id !== me.id) return c;
+  return { ...c, username: me.username, avatarColor: me.avatarColor, avatarStyle: me.avatarStyle } as T;
+}
+
 /** "Dashboard Kursi Warga (Target 1 – 10.000)": milestone, blok kasta, daftar kursi ber-pagination + slot kosong. */
 export function Leaderboard({
   open,
@@ -405,7 +411,7 @@ function SeatBoard({
           {results.length === 0 ? (
             <p className="py-2 text-center text-xs text-muted">Tidak ada warga dengan nama itu.</p>
           ) : (
-            results.map((c) => (
+            results.map((c0) => withMe(c0, me)).map((c) => (
               <button key={c.id} onClick={() => goTo(c.citizenNumber)} className="flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left text-xs hover:bg-black/5">
                 <span className="w-12 shrink-0 font-black text-muted">{formatSeat(c.citizenNumber)}</span>
                 <span className="min-w-0 flex-1 truncate font-bold">@{c.username}</span>
@@ -423,7 +429,7 @@ function SeatBoard({
 
       <ol ref={listRef} className={`mt-2 space-y-1.5 ${loading ? 'opacity-60' : ''}`}>
         {seats.map((n) => {
-          const c = rows.get(n);
+          const c = withMe(rows.get(n), me);
           const hl = highlight === n;
           if (n <= total) {
             if (!c) {
@@ -584,7 +590,7 @@ function RankList({ open, tab, me, onLocate }: { open: boolean; tab: Extract<Lea
       <input className={`${inputClass} mt-2`} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Cari @username, #nomor, atau jabatan…" />
       <ol className="mt-3 space-y-1.5">
         {rows.map((r) => {
-          const c = r.citizen;
+          const c = withMe(r.citizen, me);
           const tier = findTier(WORLD, c.tierId);
           const isMe = me?.id === c.id;
           return (

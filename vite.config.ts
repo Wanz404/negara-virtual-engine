@@ -1,8 +1,24 @@
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { defineConfig, loadEnv } from 'vite';
+import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
+
+/** Aset emote mentah (JPG ~1MB/file) hanya bahan scripts/process-emotes.py — jangan ikut ter-deploy. */
+function stripRawEmotes(): Plugin {
+  let outDir = 'dist';
+  return {
+    name: 'strip-raw-emotes',
+    apply: 'build',
+    configResolved(c) {
+      outDir = resolve(c.root, c.build.outDir);
+    },
+    closeBundle() {
+      rmSync(resolve(outDir, 'assets/emotes/raw'), { recursive: true, force: true });
+    },
+  };
+}
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'VITE_');
@@ -13,7 +29,7 @@ export default defineConfig(({ mode }) => {
   }
 
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [react(), tailwindcss(), stripRawEmotes()],
     resolve: {
       // Hanya config dunia aktif yang masuk bundle (1 codebase → 10 build berbeda).
       alias: { 'virtual-active-world': worldFile },

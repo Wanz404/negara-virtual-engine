@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { WORLD } from './configs';
 import { effectiveEconomy, findTier, nextAvailableAt } from './lib/game';
 import { formatCitizenTag, formatCoins, formatDuration } from './lib/format';
-import { playCoin, unlockAudio } from './lib/fx';
+import { installAudioUnlock, playCoin, unlockAudio } from './lib/fx';
 import type { MapData, TapTarget } from './engine';
 import {
   api,
@@ -25,6 +25,9 @@ import { CreatorStudio } from './components/CreatorStudio';
 import { GovernancePanel } from './components/Governance';
 import { Leaderboard } from './components/Leaderboard';
 import { DevPanel } from './components/DevPanel';
+import { EmotePicker, FloatingEmotes, useEmotes } from './components/Emotes';
+import { HudButton, MuteToggle } from './components/GameHud';
+import { ChatSheet, ChatTicker, useGlobalChat } from './components/GlobalChat';
 import { Hud } from './components/Hud';
 import { CitizenSheet, LandmarkSheet, NewsPanel } from './components/InfoSheets';
 import { KtpModal } from './components/KtpModal';
@@ -42,7 +45,7 @@ const POLL_WORLD_MS = 45_000;
 const POLL_MAP_MS = 60_000;
 const RING_STALE_MS = 45_000;
 
-type ModalName = 'register' | 'recover' | 'ktp' | 'status' | 'admin' | 'dev' | 'news' | 'leaderboard' | 'gov' | null;
+type ModalName = 'register' | 'recover' | 'ktp' | 'status' | 'admin' | 'dev' | 'news' | 'leaderboard' | 'gov' | 'chat' | null;
 type Sheet = { type: 'plot'; code: string } | { type: 'citizen'; id: string } | { type: 'landmark'; id: string } | null;
 
 function useNow(ms = 1000): number {
@@ -77,6 +80,23 @@ export default function App() {
   const ringCache = useRef(new Map<number, { plots: Plot[]; at: number }>());
   const visibleRings = useRef<number[]>([1]);
   const now = useNow();
+
+  // Upgrade v2: Global Chat realtime + Emote broadcast
+  const chat = useGlobalChat();
+  const emotes = useEmotes(me, mapRef);
+  const [chatSeenId, setChatSeenId] = useState(0);
+  const chatPrimed = useRef(false);
+  const lastChatId = chat.messages[chat.messages.length - 1]?.id ?? 0;
+  useEffect(() => {
+    // Pesan lama yang sudah ada saat app dibuka tidak dihitung "belum dibaca".
+    if (!chatPrimed.current && chat.ready) {
+      chatPrimed.current = true;
+      setChatSeenId(lastChatId);
+    }
+    if (modal === 'chat') setChatSeenId(lastChatId);
+  }, [chat.ready, modal, lastChatId]);
+  const chatUnread = chat.messages.filter((m) => m.id > chatSeenId && m.citizenId !== me?.id).length;
+  useEffect(() => installAudioUnlock(), []);
 
   // ---------------------------------------------------------------------------
   // Data (polling ringan, hemat kuota free tier)
@@ -308,6 +328,25 @@ export default function App() {
     setModal(null);
   }
 
+  /** Auto-sync Edit Profil: e-KTP, peta, dashboard, chat & presence langsung pakai nama/tampilan baru. */
+  function onMeUpdated(c: MyCitizen) {
+    setMe(c);
+    const patch = (list: PublicCitizen[]) =>
+      list.some((x) => x.id === c.id)
+        ? list.map((x) => (x.id === c.id ? { ...x, username: c.username, avatarColor: c.avatarColor, avatarStyle: c.avatarStyle } : x))
+        : list;
+    setCitizens(patch);
+    setExtraCitizens(patch);
+    chat.renameLocal(c.id, c.username);
+  }
+
+  function locateFromChat(citizenId: string) {
+    setModal(null);
+    setTimeout(() => {
+      if (!mapRef.current?.locateCitizen(citizenId)) toast('Warga ini sedang tidak tampil di peta.');
+    }, 280);
+  }
+
   const workAt = me ? nextAvailableAt(me.lastWorkAt, econ.workCooldownMinutes) : 0;
   const canWork = !!me && workAt <= now && !working;
 
@@ -360,29 +399,52 @@ export default function App() {
 
         {!studio && (
         <>
+        {/* HUD atas: statistik negara (kiri) + kolom tombol taktil (kanan). Tengah peta tetap lega. */}
         <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-2 p-3">
           <div className="pointer-events-auto max-w-[62%]">
             <Hud world={world} online={members.length} />
           </div>
-          {isSandbox && (
-            <button
-              onClick={() => devToolsEnabled && setModal('dev')}
-              className="pointer-events-auto rounded-full bg-amber-400 px-2.5 py-1 text-[10px] font-black tracking-wide text-gray-900 shadow"
-              title="Data disimpan di browser ini (localStorage)"
-            >
-              MODE SANDBOX{devToolsEnabled ? ' ⚙️' : ''}
-            </button>
-          )}
+          <div className="pointer-events-auto flex flex-col items-end gap-2.5">
+            {isSandbox && (
+              <button
+                onClick={() => devToolsEnabled && setModal('dev')}
+                className="rounded-full bg-amber-400 px-2.5 py-1 text-[10px] font-black tracking-wide text-gray-900 shadow"
+                title="Data disimpan di browser ini (localStorage)"
+              >
+                SANDBOX{devToolsEnabled ? ' ⚙️' : ''}
+              </button>
+            )}
+            <MuteToggle />
+            <HudButton icon="🏆" label="10K" onClick={() => setModal('leaderboard')} />
+            <HudButton icon="🪪" label={me ? 'e-KTP' : 'Daftar'} onClick={() => (me ? setModal('ktp') : (unlockAudio(), setModal('register')))} />
+            <HudButton icon="📢" label="Berita" onClick={() => setModal('news')} badge={!!world?.presidentAnnouncement} badgeTone="red" />
+            <HudButton icon="🗳️" label="Sidang" onClick={() => setModal('gov')} />
+          </div>
         </div>
 
-        {/* Tombol cepat sisi kanan */}
-        <div className="absolute right-3 bottom-4 flex flex-col gap-2">
-          <MapButton label="Deket" icon="📍" onClick={() => mapRef.current?.flyNear(me?.id ?? null)} />
-          <MapButton label="Kota" icon="🗺️" onClick={() => mapRef.current?.frameAll()} />
-          <MapButton label="Berita" icon="📢" onClick={() => setModal('news')} badge={!!world?.presidentAnnouncement} />
-          <MapButton label="Sejarah" icon="🏆" onClick={() => setModal('leaderboard')} />
-          <MapButton label="Sidang" icon="🗳️" onClick={() => setModal('gov')} />
+        {/* Pojok kiri bawah: mini chat ticker (hanya kotaknya yang bisa diklik) */}
+        <div className="pointer-events-none absolute bottom-3 left-3 right-[150px]">
+          <ChatTicker messages={chat.messages} me={me} onOpen={() => setModal('chat')} />
         </div>
+
+        {/* Pojok kanan bawah: navigasi kecil + Chat & Emote */}
+        <div className="pointer-events-none absolute right-3 bottom-3 flex flex-col items-end gap-2.5">
+          <div className="pointer-events-auto flex flex-col gap-2">
+            <HudButton size="sm" icon="📍" label="Dekat" onClick={() => mapRef.current?.flyNear(me?.id ?? null)} />
+            <HudButton size="sm" icon="🗺️" label="Kota" onClick={() => mapRef.current?.frameAll()} />
+          </div>
+          <div className="pointer-events-auto flex items-end gap-2">
+            <HudButton size="lg" icon="💬" label="Chat" onClick={() => setModal('chat')} badge={chatUnread} badgeTone="red" />
+            <EmotePicker
+              enabled={!!me}
+              lastSentAt={emotes.lastSentAt}
+              onPick={emotes.send}
+              onLocked={() => toast('😆 Daftar jadi warga dulu untuk kirim emote ke peta!')}
+            />
+          </div>
+        </div>
+
+        <FloatingEmotes items={emotes.floating} />
         </>
         )}
 
@@ -461,6 +523,21 @@ export default function App() {
           setModal('register');
         }}
       />
+      <ChatSheet
+        open={modal === 'chat'}
+        onClose={() => setModal(null)}
+        messages={chat.messages}
+        me={me}
+        session={session}
+        online={members.length}
+        onSent={chat.add}
+        onRegister={() => {
+          unlockAudio();
+          setModal('register');
+        }}
+        onTapCitizen={locateFromChat}
+        toast={toast}
+      />
       <GovernancePanel
         open={modal === 'gov'}
         onClose={() => setModal(null)}
@@ -481,7 +558,7 @@ export default function App() {
             me={me}
             session={session}
             ownedPlots={myPlotCount}
-            onUpdated={setMe}
+            onUpdated={onMeUpdated}
             onLogout={logout}
             toast={toast}
           />
@@ -586,19 +663,5 @@ export default function App() {
       )}
       <ToastStack toasts={toasts} />
     </div>
-  );
-}
-
-function MapButton({ icon, label, onClick, badge = false }: { icon: string; label: string; onClick: () => void; badge?: boolean }) {
-  return (
-    <button
-      onClick={onClick}
-      className="relative flex h-12 w-12 flex-col items-center justify-center rounded-2xl bg-surface/95 text-lg shadow-lg ring-1 ring-black/5 active:scale-95"
-      aria-label={label}
-    >
-      {icon}
-      <span className="text-[8px] leading-none font-black text-muted uppercase">{label}</span>
-      {badge && <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-white bg-red-500" />}
-    </button>
   );
 }
