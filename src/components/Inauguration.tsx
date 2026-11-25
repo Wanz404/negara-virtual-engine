@@ -19,13 +19,13 @@ const STYLE = {
     glow: '0 6px 20px #3b82f655',
     icon: '⏳',
   },
-  citizen: {
-    frame: 'linear-gradient(135deg, #ecfdf5, #34d399 40%, #065f46)',
+  wave2: {
+    frame: 'linear-gradient(135deg, #ecfdf5, #34d399 35%, #fde68a 60%, #065f46)',
     body: 'linear-gradient(180deg, #052e1f, #021a12)',
-    title: 'linear-gradient(180deg, #ffffff, #a7f3d0)',
+    title: 'linear-gradient(180deg, #ffffff, #a7f3d0 60%, #fde68a)',
     sub: '#a7f3d0',
-    glow: '0 6px 18px #10b98144',
-    icon: '🪪',
+    glow: '0 6px 22px #10b98155',
+    icon: '🎖️',
   },
 } as const;
 
@@ -50,7 +50,7 @@ export function InaugurationBadge({ citizenNumber, followStatus }: { citizenNumb
             {b.subtitle}
           </div>
         </div>
-        {b.tier === 'pioneer' && <span className="shrink-0 rounded-full bg-amber-300 px-1.5 py-0.5 text-[9px] font-black text-amber-950">#{String(citizenNumber).padStart(4, '0')}</span>}
+        {b.tier !== 'queue' && <span className="shrink-0 rounded-full bg-amber-300 px-1.5 py-0.5 text-[9px] font-black text-amber-950">#{String(citizenNumber).padStart(4, '0')}</span>}
       </div>
     </div>
   );

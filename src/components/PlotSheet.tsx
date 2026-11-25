@@ -4,6 +4,7 @@ import { buildingCost, findBuilding, findTier, propertyIncome, ringName } from '
 import { formatCoins, formatNumber } from '../lib/format';
 import { playCoin } from '../lib/fx';
 import { validateFreeText } from '../lib/validation';
+import { isInaugurated } from '../lib/inauguration';
 import { api, type MyCitizen, type Plot, type Session } from '../services';
 import { Button, Modal, errorMessage, inputClass } from './ui';
 
@@ -18,10 +19,10 @@ const CATEGORY_LABEL: Record<BuildingType['category'], string> = {
 /** Alasan aksi ekonomi terkunci (cermin nv_require_verified) — server tetap otoritas. */
 function lockReason(me: MyCitizen | null, action: keyof typeof WORLD.economy.requireVerified): string | null {
   if (!me) return `Daftar jadi ${WORLD.copy.citizenNoun.toLowerCase()} dulu untuk punya tanah.`;
-  if (!WORLD.economy.requireVerified[action] || me.followStatus === 'verified') return null;
+  if (!WORLD.economy.requireVerified[action] || isInaugurated(me)) return null;
   if (me.followStatus === 'impeached') return 'Akses terkunci: kamu sudah dimakzulkan.';
   if (me.followStatus === 'not_following') return `Akun @${me.igUsername} belum terdeteksi follow @${WORLD.igAccountHandle}. Follow lalu klik Cek Ulang di KTP.`;
-  return `Terbuka setelah resmi dilantik (verifikasi follow @${WORLD.igAccountHandle} maks. 1x24 jam).`;
+  return `Kursi #${String(me.citizenNumber).padStart(4, '0')} masih antre pelantikan gelombang berikutnya (atau verifikasi follow @${WORLD.igAccountHandle} maks. 1x24 jam).`;
 }
 
 export function PlotSheet({

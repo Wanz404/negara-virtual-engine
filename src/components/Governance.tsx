@@ -3,6 +3,7 @@ import { WORLD } from '../configs';
 import { effectiveEconomy, findTier } from '../lib/game';
 import { formatRelative } from '../lib/format';
 import { validateFreeText } from '../lib/validation';
+import { isInaugurated } from '../lib/inauguration';
 import { api, type MyCitizen, type Poll, type Session, type WorldState } from '../services';
 import { Button, Modal, errorMessage, inputClass } from './ui';
 
@@ -98,8 +99,8 @@ export function GovernancePanel({
     }
   }
 
-  const canVote = !!me && (me.followStatus === 'verified' || !WORLD.economy.requireVerified.vote);
-  const verifiedGov = !!me && (me.followStatus === 'verified' || !WORLD.economy.requireVerified.governance);
+  const canVote = !!me && (isInaugurated(me) || !WORLD.economy.requireVerified.vote);
+  const verifiedGov = !!me && (isInaugurated(me) || !WORLD.economy.requireVerified.governance);
   const speechErr = speech ? validateFreeText(speech, econ.announcementMaxLength, 'Pidato') : null;
   const filledOpts = options.map((o) => o.trim()).filter(Boolean);
   const pollErr = question ? validateFreeText(question, 120, 'Pertanyaan') : null;

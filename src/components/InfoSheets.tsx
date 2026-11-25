@@ -3,7 +3,7 @@ import { WORLD } from '../configs';
 import { findTier } from '../lib/game';
 import { formatCitizenNumber, formatCoins, formatRelative } from '../lib/format';
 import { playCoin } from '../lib/fx';
-import { INAUGURATION_ENABLED, INAUGURATION_PINNED_NEWS } from '../lib/inauguration';
+import { INAUGURATION_ENABLED, INAUGURATION_PINNED_NEWS, isInaugurated } from '../lib/inauguration';
 import { api, type DonorRow, type MyCitizen, type NewsItem, type PublicCitizen, type Session, type WorldState } from '../services';
 import { Avatar } from './Avatar';
 import { Button, Modal, errorMessage, inputClass } from './ui';
@@ -108,7 +108,7 @@ export function LandmarkSheet({
   const president = citizens.find((c) => c.citizenNumber === 1);
   const vice = citizens.find((c) => c.citizenNumber === 2);
   const pct = world && world.activeProjectGoal > 0 ? Math.min(100, (world.activeProjectFunding / world.activeProjectGoal) * 100) : 0;
-  const canDonate = !!me && me.followStatus === 'verified' && !world?.activeProjectCompleted;
+  const canDonate = isInaugurated(me) && !world?.activeProjectCompleted;
 
   return (
     <Modal open onClose={onClose} title={`${lm.emoji} ${lm.name}`}>

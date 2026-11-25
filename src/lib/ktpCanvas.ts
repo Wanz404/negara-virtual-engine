@@ -490,7 +490,7 @@ export function renderKtpCanvas(me: MyCitizen, ownedPlots: number): HTMLCanvasEl
     g.fill();
     g.textAlign = 'center';
     g.fillStyle = gold ? '#fde68a' : '#ffffff';
-    drawFit(g, `${gold ? '🏅' : inaug.tier === 'queue' ? '⏳' : '🪪'} ${inaug.title}`, W / 2, by + 48, bw - 60, 38, 24, 900);
+    drawFit(g, `${gold ? '🏅' : inaug.tier === 'queue' ? '⏳' : '🎖️'} ${inaug.title}`, W / 2, by + 48, bw - 60, 38, 24, 900);
     g.fillStyle = gold ? '#f5c542' : 'rgba(255,255,255,0.75)';
     drawFit(g, inaug.subtitle, W / 2, by + 76, bw - 60, 20, 14, 800);
   }

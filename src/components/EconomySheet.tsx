@@ -18,6 +18,7 @@ import {
   type PropertyType,
 } from '../lib/economy';
 import { effectiveEconomy } from '../lib/game';
+import { isInaugurated } from '../lib/inauguration';
 import { formatCoins, formatNumber, formatRelative } from '../lib/format';
 import { playClick } from '../lib/fx';
 import { api, type DonorBoardRow, type MyCitizen, type PropertyOwnerRow, type Session, type WorldState } from '../services';
@@ -478,7 +479,7 @@ function WorkTab({
 function VerifyLock({ me, what, onOpenKtp }: { me: MyCitizen; what: string; onOpenKtp: () => void }) {
   return (
     <div className="rounded-2xl bg-amber-50 p-3 text-xs text-amber-900 ring-1 ring-amber-200">
-      🔒 <b>{what}</b> terbuka setelah kamu resmi dilantik (akun <b>@{me.igUsername}</b> terdeteksi follow <b>@{WORLD.igAccountHandle}</b>, dicek otomatis maks. 1x24 jam).
+      🔒 <b>{what}</b> terbuka setelah kamu resmi dilantik. Kursi <b>#{String(me.citizenNumber).padStart(4, '0')}</b> masuk antrean pelantikan gelombang berikutnya — atau lebih cepat lewat verifikasi follow (<b>@{me.igUsername}</b> → <b>@{WORLD.igAccountHandle}</b>, dicek otomatis maks. 1x24 jam).
       <button type="button" className="mt-2 block font-black text-brand underline" onClick={onOpenKtp}>
         Cek status / Cek Ulang di e-KTP →
       </button>
@@ -506,7 +507,7 @@ function PropertyTab({
   const [confirm, setConfirm] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [owners, setOwners] = useState<PropertyOwnerRow[]>([]);
-  const locked = econ.requireVerified.buyLand && me.followStatus !== 'verified';
+  const locked = econ.requireVerified.buyLand && !isInaugurated(me);
 
   useEffect(() => {
     api.getPropertyOwners(15).then(setOwners).catch(() => setOwners([]));
@@ -620,7 +621,7 @@ function StationTab({
   const goal = world?.activeProjectGoal ?? 0;
   const pct = goal > 0 ? Math.min(100, (funding / goal) * 100) : 0;
   const phase = projectPhase(world?.activeProjectCompleted ? 100 : pct);
-  const locked = econ.requireVerified.donate && me.followStatus !== 'verified';
+  const locked = econ.requireVerified.donate && !isInaugurated(me);
   const done = !!world?.activeProjectCompleted;
 
   const refresh = useCallback(() => {

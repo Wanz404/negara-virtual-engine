@@ -183,6 +183,11 @@ export interface EconomyConfig {
     vote: boolean;
     governance: boolean;
   };
+  /**
+   * Pelantikan massal: kursi #1..inauguratedUpto dianggap resmi dilantik walau belum terverifikasi follow
+   * (kecuali dimakzulkan). Dibaca juga oleh nv_require_verified di Supabase. Kosong = hanya verifikasi follow.
+   */
+  inauguratedUpto?: number;
 }
 
 export interface MapConfig {

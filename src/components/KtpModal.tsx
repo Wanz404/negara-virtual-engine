@@ -6,7 +6,7 @@ import { normalizeIgUsername, validateIgUsername } from '../lib/validation';
 import { ktpFileName, renderKtpCanvas } from '../lib/ktpCanvas';
 import { api, type MyCitizen, type Session } from '../services';
 import { EditProfileForm } from './EditProfile';
-import { inaugurationBadge, takeConfettiTicket } from '../lib/inauguration';
+import { inaugurationBadge, isInaugurated, takeConfettiTicket } from '../lib/inauguration';
 import { GoldConfetti } from './Inauguration';
 import { KtpCardView } from './KtpCardView';
 import { Button, Modal, errorMessage, inputClass } from './ui';
@@ -68,10 +68,10 @@ export function KtpModal({
   useEffect(() => setPreview(null), [me.username, me.avatarColor, me.avatarStyle?.accessory, me.topProperty]);
   const inInstagram = typeof navigator !== 'undefined' && /Instagram|FBAN|FBAV/i.test(navigator.userAgent);
 
-  // Konfeti emas: hanya Perintis 1K (#0001–#1000), hanya sekali per perangkat saat pertama buka E-KTP.
+  // Konfeti emas: warga resmi dilantik (Perintis #0001–#1000 & Gelombang 2), sekali per perangkat saat pertama buka E-KTP.
   const [confetti, setConfetti] = useState(false);
   useEffect(() => {
-    if (open && inaugurationBadge(me.citizenNumber, me.followStatus)?.tier === 'pioneer' && takeConfettiTicket()) setConfetti(true);
+    if (open && isInaugurated(me) && inaugurationBadge(me.citizenNumber, me.followStatus)?.tier !== 'queue' && takeConfettiTicket()) setConfetti(true);
   }, [open, me.citizenNumber]);
 
   /**
@@ -157,7 +157,7 @@ export function KtpModal({
             Akun <b>@{me.igUsername}</b> belum terdeteksi follow <b>@{WORLD.igAccountHandle}</b>. Follow dulu lalu klik <b>Cek Ulang</b> atau <b>Ganti Instagram</b>.
           </div>
         )}
-        {me.followStatus === 'pending' && (
+        {me.followStatus === 'pending' && !isInaugurated(me) && (
           <div className="mt-2 text-xs text-muted">
             Sambil menunggu, kamu sudah bisa kerja harian & pamer KTP. Beli tanah, patungan, voting & hak pemerintahan terbuka setelah resmi dilantik.
           </div>

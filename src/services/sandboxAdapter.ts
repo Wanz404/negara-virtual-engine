@@ -22,6 +22,7 @@ import {
 } from '../lib/game';
 import { formatCitizenNumber, formatCitizenTag, formatDuration } from '../lib/format';
 import { containsProfanity } from '../lib/profanity';
+import { isInaugurated } from '../lib/inauguration';
 import {
   CHAT_COOLDOWN_MS,
   NAME_EDIT_COOLDOWN_MS,
@@ -364,7 +365,7 @@ export function createSandboxAdapter(config: WorldConfig): SandboxApi {
   }
 
   function requireVerified(c: SbCitizen, action: keyof WorldConfig['economy']['requireVerified']): void {
-    if (!econ.requireVerified[action] || c.followStatus === 'verified') return;
+    if (!econ.requireVerified[action] || isInaugurated(c)) return;
     if (c.followStatus === 'impeached') fail('Akses terkunci: kamu sudah dimakzulkan. Hubungi admin untuk pemulihan status.');
     if (c.followStatus === 'not_following')
       fail(`Akun @${c.igUsername} belum terdeteksi follow @${config.igAccountHandle}. Follow dulu lalu klik Cek Ulang atau Ganti Instagram.`);

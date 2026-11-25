@@ -221,5 +221,7 @@ export default defineWorld({
     { id: 'gerbang', kind: 'gate', name: 'Gerbang Konoha & Pangkalan Ojol', emoji: '🛵' },
     { id: 'proyek', kind: 'project_site', name: 'Zona Proyek Nasional', emoji: '🚧' },
   ],
+  // Pelantikan massal 5.531 warga pertama (#0001–#5535; #3347, #4185, #4335, #4347 kosong). Lihat migrasi 005.
+  economy: { inauguratedUpto: 5535 },
   registration: { softGateFollow: false },
 });
