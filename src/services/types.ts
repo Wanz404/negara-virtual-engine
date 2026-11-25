@@ -405,6 +405,9 @@ export interface QuickLoginCheck {
 }
 
 /** Normalisasi input username: trim, buang awalan @, huruf kecil. */
+/** Pesan seragam saat server padat / timeout / jaringan putus. */
+export const BUSY_MESSAGE = 'Server sedang padat. Coba lagi sebentar lagi — sesimu tetap aman.';
+
 export function normalizeLoginUsername(raw: string): string {
   return raw.trim().replace(/^[\s@]+/, '').trim().toLowerCase();
 }

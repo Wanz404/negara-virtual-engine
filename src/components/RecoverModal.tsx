@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { WORLD } from '../configs';
-import { api, normalizeLoginUsername, type QuickLoginCheck, type Session } from '../services';
+import { BUSY_MESSAGE, api, normalizeLoginUsername, type QuickLoginCheck, type Session } from '../services';
 import { Button, Field, Modal, errorMessage, inputClass } from './ui';
 
 type Tab = 'username' | 'ktp';
@@ -82,6 +82,8 @@ export function RecoverModal({ open, onClose, onRecovered }: { open: boolean; on
     void run(async () => done(await api.recoverSession(ktp.trim(), pin)));
   };
 
+  /** Server padat/timeout → tombol yang sama berubah jadi "Coba Lagi" (isian & sesi lokal tetap). */
+  const retry = error === BUSY_MESSAGE;
   const tag = check?.citizenNumber ? ` | ${String(check.citizenNumber).padStart(3, '0')}` : '';
   const errorBox = error && <div className="rounded-2xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</div>;
 
@@ -122,7 +124,7 @@ export function RecoverModal({ open, onClose, onRecovered }: { open: boolean; on
           </Field>
           {errorBox}
           <Button type="submit" className="w-full" loading={busy} disabled={!normalizeLoginUsername(username)}>
-            Cari KTP-ku
+            {retry ? '🔄 Coba Lagi' : 'Cari KTP-ku'}
           </Button>
         </form>
       )}
@@ -165,7 +167,7 @@ export function RecoverModal({ open, onClose, onRecovered }: { open: boolean; on
               )}
               {errorBox}
               <Button type="submit" className="w-full" loading={busy} disabled={pin.length < 4 || (check.status === 'needs_pin_setup' && pin2.length < 4)}>
-                {check.status === 'needs_pin_setup' ? 'Buat PIN & Masuk' : 'Masuk'}
+                {retry ? '🔄 Coba Lagi' : check.status === 'needs_pin_setup' ? 'Buat PIN & Masuk' : 'Masuk'}
               </Button>
             </form>
           )}
@@ -187,7 +189,7 @@ export function RecoverModal({ open, onClose, onRecovered }: { open: boolean; on
           <Field label="PIN Pemulihan">{pinInput(pin, setPin, 'current-password')}</Field>
           {errorBox}
           <Button type="submit" className="w-full" loading={busy} disabled={!ktp || pin.length < 4}>
-            Masuk
+            {retry ? '🔄 Coba Lagi' : 'Masuk'}
           </Button>
           <p className="text-center text-xs text-muted">PIN diatur dari menu KTP. Salah 5x = dikunci 1 jam.</p>
         </form>

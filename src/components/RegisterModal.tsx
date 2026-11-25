@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { WORLD, type Accessory } from '../configs';
 import { normalizeIgUsername, validateDisplayName, validateIgUsername } from '../lib/validation';
 import { unlockAudio } from '../lib/fx';
-import { api, turnstileRequired, turnstileSiteKey, type RegisterResult } from '../services';
+import { BUSY_MESSAGE, api, turnstileRequired, turnstileSiteKey, type RegisterResult } from '../services';
 import { Avatar } from './Avatar';
 import { Turnstile } from './Turnstile';
 import { Button, Field, Modal, errorMessage, inputClass } from './ui';
@@ -186,7 +186,7 @@ export function RegisterModal({
         {serverError && <div className="rounded-2xl bg-red-50 p-3 text-sm font-semibold text-red-700">{serverError}</div>}
 
         <Button type="submit" className="w-full py-4 text-base" loading={submitting} disabled={!canSubmit}>
-          {submitting ? 'Mencetak KTP…' : `🎲 ${WORLD.copy.registerCta} Sekarang`}
+          {submitting ? 'Mencetak KTP…' : serverError === BUSY_MESSAGE ? '🔄 Coba Lagi' : `🎲 ${WORLD.copy.registerCta} Sekarang`}
         </Button>
         <button type="button" onClick={onOpenRecover} className="w-full text-center text-xs font-semibold text-muted underline">
           Sudah punya KTP? Masuk pakai Username

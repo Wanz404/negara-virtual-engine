@@ -1,6 +1,6 @@
 -- =============================================================================
 -- DEPLOY_ALL_SQL.sql — GENERATED oleh scripts/bundle-sql.mjs. Jalankan SEKALI di Supabase SQL Editor.
--- Isi: 001_init.sql, 002_worker_checks.sql + seed.sql (10 dunia, 0 warga). Aman diulang (idempotent).
+-- Isi: 001_init.sql, 002_worker_checks.sql, 003_quick_login_username.sql, 004_disk_io_diet.sql, upgrade_v2_social_ux.sql, upgrade_v3_economy_ux.sql + seed.sql (10 dunia, 0 warga). Aman diulang (idempotent).
 -- =============================================================================
 
 -- >>> migrations/001_init.sql
@@ -2084,6 +2084,920 @@ $$;
 
 REVOKE ALL ON FUNCTION public.report_follow_checks(TEXT, TEXT, TEXT[], TEXT[], INTEGER) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.report_follow_checks(TEXT, TEXT, TEXT[], TEXT[], INTEGER) TO anon, authenticated;
+
+
+-- >>> migrations/003_quick_login_username.sql
+-- =============================================================================
+-- 003 — Masuk Cepat pakai Username (2 langkah) — NON-DESTRUKTIF
+--   Langkah 1  quick_login_check(world, username) → status akun:
+--              not_found | ambiguous | has_pin | needs_pin_setup | vip_protected
+--   Langkah 2  quick_login(world, username, pin)
+--              has_pin          → PIN wajib cocok (kunci 1 jam setelah 5x salah, sama seperti recover_session)
+--              needs_pin_setup  → PIN baru disimpan (hanya bila masih NULL) lalu langsung masuk
+--              vip_protected    → #001–#010 tanpa PIN tidak bisa diklaim dari halaman publik
+--   Username dicocokkan ke username Instagram (unik) lebih dulu, lalu nama tampilan bila hasilnya tepat 1.
+--   Token sesi lama TIDAK diganti → perangkat lain yang masih login tetap login.
+--   Tidak ada kolom/tabel warga yang diubah; hanya fungsi + index baru.
+-- =============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_citizens_lower_username ON public.citizens (world_id, lower(username));
+
+-- Resolusi username → id warga (IG username unik dulu, lalu nama tampilan bila tepat 1).
+CREATE OR REPLACE FUNCTION public.nv_quick_resolve(p_world_id TEXT, p_username TEXT)
+RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+DECLARE
+  v_q TEXT := lower(btrim(regexp_replace(coalesce(p_username, ''), '^[\s@]+', '')));
+  v_id UUID;
+  v_n INTEGER;
+BEGIN
+  IF v_q = '' OR char_length(v_q) > 40 THEN
+    RETURN jsonb_build_object('status', 'not_found');
+  END IF;
+  SELECT id INTO v_id FROM public.citizens WHERE world_id = p_world_id AND ig_username = v_q;
+  IF v_id IS NULL THEN
+    SELECT count(*), min(id::text)::uuid INTO v_n, v_id
+    FROM public.citizens WHERE world_id = p_world_id AND lower(username) = v_q;
+    IF v_n = 0 THEN RETURN jsonb_build_object('status', 'not_found'); END IF;
+    IF v_n > 1 THEN RETURN jsonb_build_object('status', 'ambiguous'); END IF;
+  END IF;
+  RETURN jsonb_build_object('status', 'found', 'id', v_id);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.quick_login_check(p_world_id TEXT, p_username TEXT)
+RETURNS JSONB LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public, pg_temp AS $$
+DECLARE
+  r JSONB := public.nv_quick_resolve(p_world_id, p_username);
+  v public.citizens;
+BEGIN
+  IF r->>'status' <> 'found' THEN
+    RETURN jsonb_build_object('ok', true, 'status', r->>'status');
+  END IF;
+  SELECT * INTO v FROM public.citizens WHERE id = (r->>'id')::uuid;
+  RETURN jsonb_build_object(
+    'ok', true,
+    'status', CASE
+      WHEN v.recovery_pin_hash IS NOT NULL THEN 'has_pin'
+      WHEN v.citizen_number <= 10 THEN 'vip_protected'
+      ELSE 'needs_pin_setup' END,
+    'citizen_number', v.citizen_number,
+    'username', v.username,
+    'locked_minutes', CASE WHEN v.recovery_locked_until > now()
+      THEN ceil(extract(epoch FROM v.recovery_locked_until - now()) / 60)::int END
+  );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.quick_login(p_world_id TEXT, p_username TEXT, p_pin TEXT)
+RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions, pg_temp AS $$
+DECLARE
+  r JSONB := public.nv_quick_resolve(p_world_id, p_username);
+  v public.citizens;
+  v_left INTEGER;
+BEGIN
+  IF r->>'status' = 'ambiguous' THEN
+    RETURN jsonb_build_object('ok', false, 'error', 'Ada beberapa warga dengan nama itu. Ketik username Instagram-mu.');
+  ELSIF r->>'status' <> 'found' THEN
+    RETURN jsonb_build_object('ok', false, 'error', 'Username tidak ditemukan.');
+  END IF;
+  IF p_pin IS NULL OR p_pin !~ '^[0-9]{4,6}$' THEN
+    RETURN jsonb_build_object('ok', false, 'error', 'PIN harus 4–6 digit angka.');
+  END IF;
+
+  SELECT * INTO v FROM public.citizens WHERE id = (r->>'id')::uuid FOR UPDATE;
+
+  -- Akun belum punya PIN: klaim dengan PIN baru (bukan untuk kursi VIP #001–#010).
+  IF v.recovery_pin_hash IS NULL THEN
+    IF v.citizen_number <= 10 THEN
+      RETURN jsonb_build_object('ok', false, 'error', 'Akun ini dilindungi pengaman khusus. Gunakan pemulihan akun.');
+    END IF;
+    UPDATE public.citizens
+    SET recovery_pin_hash = extensions.crypt(p_pin, extensions.gen_salt('bf', 8)),
+        recovery_failed_attempts = 0, recovery_locked_until = NULL, last_active_at = now()
+    WHERE id = v.id AND recovery_pin_hash IS NULL;
+    RETURN jsonb_build_object('ok', true, 'citizen_id', v.id, 'secret_token', v.secret_token, 'pin_created', true);
+  END IF;
+
+  -- Akun ber-PIN: verifikasi dengan kunci 1 jam setelah 5x salah (sama seperti recover_session).
+  IF v.recovery_locked_until IS NOT NULL AND v.recovery_locked_until > now() THEN
+    RETURN jsonb_build_object('ok', false, 'error',
+      'Terlalu banyak percobaan. Coba lagi dalam ' || public.nv_fmt_wait(v.recovery_locked_until - now()) || '.');
+  END IF;
+  IF extensions.crypt(p_pin, v.recovery_pin_hash) = v.recovery_pin_hash THEN
+    UPDATE public.citizens SET recovery_failed_attempts = 0, recovery_locked_until = NULL, last_active_at = now()
+    WHERE id = v.id;
+    RETURN jsonb_build_object('ok', true, 'citizen_id', v.id, 'secret_token', v.secret_token, 'pin_created', false);
+  END IF;
+  v_left := 5 - (v.recovery_failed_attempts + 1);
+  UPDATE public.citizens
+  SET recovery_failed_attempts = CASE WHEN v_left <= 0 THEN 0 ELSE recovery_failed_attempts + 1 END,
+      recovery_locked_until = CASE WHEN v_left <= 0 THEN now() + INTERVAL '1 hour' ELSE recovery_locked_until END
+  WHERE id = v.id;
+  RETURN jsonb_build_object('ok', false, 'error',
+    CASE WHEN v_left <= 0 THEN 'PIN salah. KTP dikunci 1 jam.' ELSE 'PIN salah. Sisa ' || v_left || ' percobaan.' END);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.nv_quick_resolve(TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.quick_login_check(TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.quick_login(TEXT, TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.quick_login_check(TEXT, TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.quick_login(TEXT, TEXT, TEXT) TO anon, authenticated;
+
+NOTIFY pgrst, 'reload schema';
+
+
+-- >>> migrations/004_disk_io_diet.sql
+-- =============================================================================
+-- 004 — Diet Disk IO — NON-DESTRUKTIF
+--   * get_my_citizen hanya menulis last_active_at bila nilai lamanya > 10 menit.
+--     Dulu: 1 UPDATE per warga online per ±1 menit. last_active_at ber-index
+--     (idx_citizens_world_active) → setiap UPDATE menulis ulang baris + index + WAL
+--     (tidak bisa HOT update) + baris mati untuk autovacuum. Sekarang mayoritas panggilan = baca saja.
+--   * Index tambahan kecil untuk query yang paling sering dipanggil edge snapshot & chat.
+--   Tidak ada data warga yang diubah/dihapus; hanya CREATE OR REPLACE FUNCTION + CREATE INDEX IF NOT EXISTS.
+--   Aman dijalankan berulang kali.
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION public.get_my_citizen(p_world_id TEXT, p_citizen_id UUID, p_token UUID)
+RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+DECLARE
+  v_c public.citizens;
+BEGIN
+  v_c := public.nv_auth_citizen(p_world_id, p_citizen_id, p_token, FALSE);
+  IF v_c.last_active_at < now() - interval '10 minutes' THEN
+    UPDATE public.citizens SET last_active_at = now()
+    WHERE id = v_c.id AND last_active_at < now() - interval '10 minutes'
+    RETURNING * INTO v_c;
+    -- Balapan dengan request lain yang sudah memperbarui → baris tidak ter-update, baca ulang saja.
+    IF NOT FOUND THEN
+      v_c := public.nv_auth_citizen(p_world_id, p_citizen_id, p_token, FALSE);
+    END IF;
+  END IF;
+  RETURN public.nv_citizen_private(v_c);
+END;
+$$;
+
+-- /api/snapshot: land_plots?world_id=eq.X&owner_citizen_id=not.is.null (tiap refresh edge)
+CREATE INDEX IF NOT EXISTS idx_plots_world_owned
+  ON public.land_plots (world_id, ring_level)
+  WHERE owner_citizen_id IS NOT NULL;
+
+-- Chat: urutan waktu (moderasi / pembersihan) — urutan utama tetap (world_id, id DESC).
+-- (Dibungkus cek: di bundle, file ini berjalan sebelum upgrade_v2 yang membuat tabel chat.)
+DO $$
+BEGIN
+  IF to_regclass('public.global_chat_messages') IS NOT NULL THEN
+    CREATE INDEX IF NOT EXISTS idx_global_chat_world_time
+      ON public.global_chat_messages (world_id, created_at DESC);
+  END IF;
+END $$;
+
+-- Index yang SUDAH ADA (dicek, tidak dibuat ulang):
+--   citizens (world_id, citizen_number) UNIQUE · citizens (world_id, lower(username)) [003]
+--   citizens (world_id, last_active_at DESC) · citizens (world_id, coins DESC, citizen_number)
+--   news_feed (world_id, created_at DESC) · land_plots (world_id, ring_level) · land_plots (world_id, owner_citizen_id)
+--   world_states PRIMARY KEY (world_id) · global_chat_messages (world_id, id DESC)
+
+
+-- >>> migrations/upgrade_v2_social_ux.sql
+-- =============================================================================
+-- UPGRADE v2 — Social & UX: Edit Profil (ganti nama) + Global Chat real-time.
+--
+-- 100% IDEMPOTENT & NON-DESTRUKTIF: aman dijalankan berkali-kali di Supabase SQL Editor pada
+-- database production yang sudah berisi warga. Tidak ada DROP TABLE / DROP COLUMN / perubahan tipe
+-- kolom lama. Hanya: ADD COLUMN IF NOT EXISTS, CREATE TABLE IF NOT EXISTS, CREATE OR REPLACE FUNCTION.
+--
+-- Emote peta TIDAK disimpan di database (Supabase Realtime Broadcast, 0 beban tabel).
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- 1. Kolom baru di citizens (metadata-only di PG 11+, instan walau ribuan baris)
+-- -----------------------------------------------------------------------------
+ALTER TABLE public.citizens ADD COLUMN IF NOT EXISTS name_updated_at TIMESTAMPTZ;
+ALTER TABLE public.citizens ADD COLUMN IF NOT EXISTS name_edit_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE public.citizens ADD COLUMN IF NOT EXISTS last_chat_at TIMESTAMPTZ;
+
+-- -----------------------------------------------------------------------------
+-- 2. Tabel Global Chat (dibatasi 150 pesan terbaru per dunia oleh send_global_chat)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.global_chat_messages (
+  id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+  world_id TEXT NOT NULL REFERENCES public.world_states(world_id) ON DELETE CASCADE,
+  citizen_id UUID NOT NULL REFERENCES public.citizens(id) ON DELETE CASCADE,
+  seat_number INTEGER NOT NULL,
+  display_name TEXT NOT NULL,
+  role_title TEXT NOT NULL DEFAULT '',
+  tier TEXT NOT NULL DEFAULT '',
+  message TEXT NOT NULL DEFAULT '' CHECK (char_length(message) <= 140),
+  emote_key TEXT CHECK (emote_key IS NULL OR emote_key IN ('laugh', 'cry', 'salute', 'fire', 'coin', 'angry')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT global_chat_not_empty CHECK (message <> '' OR emote_key IS NOT NULL)
+);
+
+CREATE INDEX IF NOT EXISTS idx_global_chat_world_id ON public.global_chat_messages (world_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_global_chat_citizen ON public.global_chat_messages (citizen_id);
+
+-- Batas bawah id yang boleh dibaca publik = 50 pesan terbaru per dunia.
+-- SECURITY DEFINER agar policy tidak rekursif ke tabelnya sendiri.
+-- Sengaja TIDAK berprefiks nv_ (loop REVOKE di 001_init.sql tidak mencabut hak eksekusinya).
+CREATE OR REPLACE FUNCTION public.gchat_visible_floor(p_world_id TEXT)
+RETURNS BIGINT LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp AS $$
+  SELECT coalesce(min(t.id), 0)
+  FROM (SELECT g.id FROM public.global_chat_messages g WHERE g.world_id = p_world_id ORDER BY g.id DESC LIMIT 50) t
+$$;
+
+ALTER TABLE public.global_chat_messages ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS global_chat_public_read ON public.global_chat_messages;
+CREATE POLICY global_chat_public_read ON public.global_chat_messages
+  FOR SELECT TO anon, authenticated
+  USING (id >= public.gchat_visible_floor(world_id));
+
+-- Publik hanya SELECT. INSERT/UPDATE/DELETE wajib lewat RPC SECURITY DEFINER.
+REVOKE ALL ON public.global_chat_messages FROM anon, authenticated;
+GRANT SELECT ON public.global_chat_messages TO anon, authenticated;
+DO $$
+DECLARE
+  v_seq TEXT := pg_get_serial_sequence('public.global_chat_messages', 'id');
+BEGIN
+  IF v_seq IS NOT NULL THEN
+    EXECUTE format('REVOKE ALL ON SEQUENCE %s FROM anon, authenticated', v_seq);
+  END IF;
+END $$;
+
+-- -----------------------------------------------------------------------------
+-- 3. Helper sanitasi (karakter tak terlihat: zero-width, bidi override, BOM)
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.gchat_strip_invisible(p_text TEXT)
+RETURNS TEXT LANGUAGE sql IMMUTABLE AS $$
+  SELECT regexp_replace(coalesce(p_text, ''), '[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]', '', 'g')
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 4. RPC Edit Profil: ganti nama tampilan (1x / 24 jam) + warna/aksesori avatar
+--    Field terkunci (nomor kursi, jabatan, tier, ring/zona, tanggal gabung, status follow)
+--    TIDAK punya parameter sama sekali → mustahil diubah dari klien.
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.update_citizen_profile(
+  p_world_id TEXT,
+  p_citizen_id UUID,
+  p_token UUID,
+  p_display_name TEXT DEFAULT NULL,
+  p_avatar_color TEXT DEFAULT NULL,
+  p_accessory TEXT DEFAULT NULL
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_world public.world_states;
+  v_c public.citizens;
+  v_old_name TEXT;
+  v_name TEXT;
+  v_name_changed BOOLEAN := FALSE;
+  v_color TEXT;
+  v_style JSONB;
+  v_allowed JSONB;
+  v_next TIMESTAMPTZ;
+  v_changed BOOLEAN := FALSE;
+BEGIN
+  v_world := public.nv_get_world(p_world_id);
+  -- Validasi sesi (citizen_id + secret_token) + kunci baris → anti race-condition ganti nama ganda.
+  v_c := public.nv_auth_citizen(p_world_id, p_citizen_id, p_token);
+  v_old_name := v_c.username;
+  v_name := v_c.username;
+  v_color := v_c.avatar_color;
+  v_style := coalesce(v_c.avatar_style, '{}'::jsonb);
+
+  -- --- Nama tampilan ---
+  IF p_display_name IS NOT NULL THEN
+    v_name := public.nv_clean_text(public.gchat_strip_invisible(p_display_name));
+    IF char_length(v_name) < 2 OR char_length(v_name) > 24 THEN
+      RAISE EXCEPTION 'Nama tampilan harus 2–24 karakter.';
+    END IF;
+    IF public.nv_has_bad_chars(v_name) THEN
+      RAISE EXCEPTION 'Nama tampilan mengandung karakter yang tidak diizinkan (tanpa < > { } [ ] \ | ` ").';
+    END IF;
+    IF v_name !~ '[[:alnum:]]' THEN
+      RAISE EXCEPTION 'Nama tampilan harus mengandung huruf atau angka.';
+    END IF;
+    IF public.nv_contains_profanity(v_name) THEN
+      RAISE EXCEPTION 'Nama tampilan mengandung kata yang tidak diizinkan.';
+    END IF;
+    IF v_name <> v_old_name THEN
+      v_next := v_c.name_updated_at + INTERVAL '24 hours';
+      IF v_next IS NOT NULL AND v_next > now() THEN
+        RAISE EXCEPTION 'Nama baru saja diganti. Bisa ganti lagi dalam %.', public.nv_fmt_wait(v_next - now());
+      END IF;
+      v_name_changed := TRUE;
+      v_changed := TRUE;
+    END IF;
+  END IF;
+
+  -- --- Warna avatar ---
+  IF p_avatar_color IS NOT NULL AND p_avatar_color <> v_c.avatar_color THEN
+    IF p_avatar_color !~ '^#[0-9a-fA-F]{6}$' THEN
+      RAISE EXCEPTION 'Warna avatar tidak valid.';
+    END IF;
+    v_color := p_avatar_color;
+    v_changed := TRUE;
+  END IF;
+
+  -- --- Aksesori avatar (hanya dari daftar resmi config dunia) ---
+  IF p_accessory IS NOT NULL AND p_accessory IS DISTINCT FROM (v_style->>'accessory') THEN
+    v_allowed := coalesce(v_world.config->'registration'->'avatarAccessories', '["none"]'::jsonb);
+    IF jsonb_typeof(v_allowed) <> 'array' OR NOT (v_allowed ? p_accessory) THEN
+      RAISE EXCEPTION 'Aksesori avatar tidak tersedia.';
+    END IF;
+    v_style := v_style || jsonb_build_object('accessory', p_accessory);
+    v_changed := TRUE;
+  END IF;
+
+  IF NOT v_changed THEN
+    RAISE EXCEPTION 'Tidak ada perubahan untuk disimpan.';
+  END IF;
+
+  UPDATE public.citizens
+  SET username = v_name,
+      avatar_color = v_color,
+      avatar_style = v_style,
+      name_updated_at = CASE WHEN v_name_changed THEN now() ELSE name_updated_at END,
+      name_edit_count = name_edit_count + CASE WHEN v_name_changed THEN 1 ELSE 0 END,
+      last_active_at = now()
+  WHERE id = v_c.id
+  RETURNING * INTO v_c;
+
+  IF v_name_changed THEN
+    -- Sinkronkan salinan nama yang didenormalisasi (papan nama kavling & riwayat chat).
+    UPDATE public.land_plots
+    SET owner_tag = public.nv_tag(v_c.username, v_c.citizen_number)
+    WHERE world_id = p_world_id AND owner_citizen_id = v_c.id;
+
+    UPDATE public.global_chat_messages
+    SET display_name = v_c.username
+    WHERE world_id = p_world_id AND citizen_id = v_c.id;
+
+    -- Jejak publik anti-penyamaran.
+    PERFORM public.nv_news(p_world_id, v_c.id, 'system',
+      '🪪 Warga #' || public.nv_pad(v_c.citizen_number, 4) || ' ganti nama: ' || v_old_name || ' → ' || v_c.username);
+  END IF;
+
+  RETURN public.nv_citizen_private(v_c);
+END;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 5. RPC Global Chat: kirim pesan (cooldown 4 dtk, maks 140 karakter, auto-prune 150)
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.send_global_chat(
+  p_world_id TEXT,
+  p_citizen_id UUID,
+  p_token UUID,
+  p_message TEXT,
+  p_emote_key TEXT DEFAULT NULL
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_c public.citizens;
+  v_msg TEXT;
+  v_emote TEXT;
+  v_wait NUMERIC;
+  v_row public.global_chat_messages;
+  v_floor BIGINT;
+BEGIN
+  PERFORM public.nv_get_world(p_world_id);
+  -- FOR UPDATE: 2 request bersamaan dari warga yang sama antre → cooldown tidak bisa ditembus.
+  v_c := public.nv_auth_citizen(p_world_id, p_citizen_id, p_token);
+
+  IF v_c.follow_status = 'impeached' THEN
+    RAISE EXCEPTION 'Warga yang dimakzulkan tidak bisa mengirim chat.';
+  END IF;
+
+  IF v_c.last_chat_at IS NOT NULL AND v_c.last_chat_at > now() - INTERVAL '4 seconds' THEN
+    v_wait := ceil(extract(epoch FROM (v_c.last_chat_at + INTERVAL '4 seconds' - now())));
+    RAISE EXCEPTION 'Pelan-pelan, tunggu % detik lagi.', greatest(v_wait, 1);
+  END IF;
+
+  v_msg := public.nv_clean_text(public.gchat_strip_invisible(p_message));
+  v_emote := nullif(lower(btrim(coalesce(p_emote_key, ''))), '');
+
+  IF v_emote IS NOT NULL AND v_emote NOT IN ('laugh', 'cry', 'salute', 'fire', 'coin', 'angry') THEN
+    RAISE EXCEPTION 'Emote tidak dikenal.';
+  END IF;
+  IF v_msg = '' AND v_emote IS NULL THEN
+    RAISE EXCEPTION 'Pesan tidak boleh kosong.';
+  END IF;
+  IF char_length(v_msg) > 140 THEN
+    RAISE EXCEPTION 'Pesan maksimal 140 karakter.';
+  END IF;
+  -- Teks polos: tolak karakter kontrol & tag HTML.
+  IF v_msg ~ '[[:cntrl:]<>]' THEN
+    RAISE EXCEPTION 'Pesan mengandung karakter yang tidak diizinkan.';
+  END IF;
+  IF v_msg <> '' AND public.nv_contains_profanity(v_msg) THEN
+    RAISE EXCEPTION 'Pesan mengandung kata yang tidak diizinkan.';
+  END IF;
+
+  INSERT INTO public.global_chat_messages (world_id, citizen_id, seat_number, display_name, role_title, tier, message, emote_key)
+  VALUES (p_world_id, v_c.id, v_c.citizen_number, v_c.username, v_c.role_title, v_c.tier_id, v_msg, v_emote)
+  RETURNING * INTO v_row;
+
+  UPDATE public.citizens SET last_chat_at = now(), last_active_at = now() WHERE id = v_c.id;
+
+  -- Auto-prune: simpan hanya 150 pesan terbaru per dunia → storage free tier tidak pernah penuh.
+  SELECT g.id INTO v_floor
+  FROM public.global_chat_messages g
+  WHERE g.world_id = p_world_id
+  ORDER BY g.id DESC
+  OFFSET 149 LIMIT 1;
+  IF v_floor IS NOT NULL THEN
+    DELETE FROM public.global_chat_messages WHERE world_id = p_world_id AND id < v_floor;
+  END IF;
+
+  RETURN to_jsonb(v_row);
+END;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 6. Hak eksekusi
+-- -----------------------------------------------------------------------------
+REVOKE ALL ON FUNCTION public.gchat_strip_invisible(TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.gchat_visible_floor(TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.update_citizen_profile(TEXT, UUID, UUID, TEXT, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.send_global_chat(TEXT, UUID, UUID, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+
+-- Policy SELECT dievaluasi sebagai role pembaca → role publik wajib boleh memanggil fungsi floor.
+GRANT EXECUTE ON FUNCTION public.gchat_visible_floor(TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.update_citizen_profile(TEXT, UUID, UUID, TEXT, TEXT, TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.send_global_chat(TEXT, UUID, UUID, TEXT, TEXT) TO anon, authenticated;
+
+-- -----------------------------------------------------------------------------
+-- 7. Realtime: masukkan tabel chat ke publikasi supabase_realtime (sekali saja)
+-- -----------------------------------------------------------------------------
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime')
+     AND NOT EXISTS (
+       SELECT 1 FROM pg_publication_tables
+       WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'global_chat_messages'
+     ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.global_chat_messages;
+  END IF;
+END $$;
+
+-- Cek cepat setelah dijalankan (opsional):
+--   SELECT * FROM pg_publication_tables WHERE tablename = 'global_chat_messages';   -- harus 1 baris
+--   SELECT column_name FROM information_schema.columns
+--   WHERE table_name = 'citizens' AND column_name IN ('name_updated_at', 'name_edit_count', 'last_chat_at');
+
+
+-- >>> migrations/upgrade_v3_economy_ux.sql
+-- =============================================================================
+-- UPGRADE v3 — Economy UX: Gaji Harian, Kerja Cepat, Misi Warga Baru, Patungan Stasiun
+-- (Top Donatur + pengumuman chat), Katalog Properti & Usaha RT.
+--
+-- Jalankan TEPAT SETELAH upgrade_v2_social_ux.sql (butuh tabel global_chat_messages & kolom
+-- citizens.last_chat_at dari v2). 100% IDEMPOTENT & NON-DESTRUKTIF: tidak ada DROP TABLE / DROP COLUMN /
+-- reset saldo. Semua mutasi saldo RpK lewat RPC SECURITY DEFINER yang memverifikasi secret_token warga.
+-- =============================================================================
+
+DO $$
+BEGIN
+  IF to_regclass('public.global_chat_messages') IS NULL THEN
+    RAISE EXCEPTION 'Jalankan supabase/migrations/upgrade_v2_social_ux.sql dulu, baru file v3 ini.';
+  END IF;
+END $$;
+
+-- -----------------------------------------------------------------------------
+-- 1. Kolom baru (citizens & chat)
+-- -----------------------------------------------------------------------------
+ALTER TABLE public.citizens ADD COLUMN IF NOT EXISTS last_salary_at TIMESTAMPTZ;
+ALTER TABLE public.citizens ADD COLUMN IF NOT EXISTS quick_work_at TIMESTAMPTZ;
+ALTER TABLE public.citizens ADD COLUMN IF NOT EXISTS quick_work_date DATE;
+ALTER TABLE public.citizens ADD COLUMN IF NOT EXISTS quick_work_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE public.citizens ADD COLUMN IF NOT EXISTS claimed_missions JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE public.citizens ADD COLUMN IF NOT EXISTS top_property TEXT;
+
+-- Pesan sistem (pengumuman donasi) di Global Chat. Nama donatur tetap di display_name agar ikut
+-- tersinkron saat warga ganti nama (update_citizen_profile v2).
+ALTER TABLE public.global_chat_messages ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'chat';
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'global_chat_kind_check') THEN
+    ALTER TABLE public.global_chat_messages
+      ADD CONSTRAINT global_chat_kind_check CHECK (kind IN ('chat', 'system'));
+  END IF;
+END $$;
+
+-- -----------------------------------------------------------------------------
+-- 2. Katalog Properti & Usaha RT (per dunia) + kepemilikan warga
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.property_types (
+  world_id TEXT NOT NULL REFERENCES public.world_states(world_id) ON DELETE CASCADE,
+  id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  emoji TEXT NOT NULL DEFAULT '🏠',
+  price BIGINT NOT NULL CHECK (price > 0),
+  daily_bonus BIGINT NOT NULL DEFAULT 0 CHECK (daily_bonus >= 0),
+  sort INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (world_id, id)
+);
+
+-- Seed katalog Republik Konoha (DO NOTHING: harga yang sudah diubah admin tidak ditimpa saat file diulang).
+INSERT INTO public.property_types (world_id, id, name, emoji, price, daily_bonus, sort)
+SELECT 'republik-konoha', v.id, v.name, v.emoji, v.price, v.bonus, v.sort
+FROM (VALUES
+  ('gerobak_lapak', 'Gerobak / Lapak RT', '🛒', 80, 5, 1),
+  ('warung_madura', 'Warung Madura Mini', '🏪', 150, 12, 2),
+  ('rumah_kavling', 'Rumah Kavling RT', '🏠', 350, 30, 3),
+  ('ruko_distrik', 'Ruko Distrik Kota', '🏬', 800, 75, 4),
+  ('mansion_konglo', 'Mansion Konglomerat', '🏰', 2000, 200, 5)
+) AS v(id, name, emoji, price, bonus, sort)
+WHERE EXISTS (SELECT 1 FROM public.world_states w WHERE w.world_id = 'republik-konoha')
+ON CONFLICT (world_id, id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS public.citizen_properties (
+  id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+  world_id TEXT NOT NULL,
+  citizen_id UUID NOT NULL REFERENCES public.citizens(id) ON DELETE CASCADE,
+  property_type TEXT NOT NULL,
+  rt_label TEXT NOT NULL DEFAULT '',
+  purchased_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (citizen_id, property_type),
+  FOREIGN KEY (world_id, property_type) REFERENCES public.property_types(world_id, id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_citizen_properties_world_recent ON public.citizen_properties (world_id, purchased_at DESC);
+
+ALTER TABLE public.property_types ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.citizen_properties ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS property_types_public_read ON public.property_types;
+CREATE POLICY property_types_public_read ON public.property_types FOR SELECT TO anon, authenticated USING (true);
+DROP POLICY IF EXISTS citizen_properties_public_read ON public.citizen_properties;
+CREATE POLICY citizen_properties_public_read ON public.citizen_properties FOR SELECT TO anon, authenticated USING (true);
+
+REVOKE ALL ON public.property_types, public.citizen_properties FROM anon, authenticated;
+GRANT SELECT ON public.property_types, public.citizen_properties TO anon, authenticated;
+DO $$
+DECLARE
+  v_seq TEXT := pg_get_serial_sequence('public.citizen_properties', 'id');
+BEGIN
+  IF v_seq IS NOT NULL THEN
+    EXECUTE format('REVOKE ALL ON SEQUENCE %s FROM anon, authenticated', v_seq);
+  END IF;
+END $$;
+
+-- -----------------------------------------------------------------------------
+-- 3. Helper
+-- -----------------------------------------------------------------------------
+
+-- Bonus gaji jabatan per nomor kursi (cermin src/lib/economy.ts → rankSalaryBonus).
+CREATE OR REPLACE FUNCTION public.nv_rank_salary_bonus(p_number INTEGER)
+RETURNS INTEGER LANGUAGE sql IMMUTABLE AS $$
+  SELECT CASE WHEN p_number <= 2 THEN 40 WHEN p_number <= 30 THEN 25 WHEN p_number <= 100 THEN 15 ELSE 0 END
+$$;
+
+CREATE OR REPLACE FUNCTION public.nv_property_salary_bonus(p_world_id TEXT, p_citizen_id UUID)
+RETURNS BIGINT LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp AS $$
+  SELECT coalesce(sum(t.daily_bonus), 0)::bigint
+  FROM public.citizen_properties cp
+  JOIN public.property_types t ON t.world_id = cp.world_id AND t.id = cp.property_type
+  WHERE cp.world_id = p_world_id AND cp.citizen_id = p_citizen_id
+$$;
+
+-- Pesan sistem ke Global Chat + auto-prune 150 (dipakai pengumuman donasi).
+CREATE OR REPLACE FUNCTION public.nv_chat_system(p_world_id TEXT, p_c public.citizens, p_message TEXT)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+DECLARE
+  v_floor BIGINT;
+BEGIN
+  INSERT INTO public.global_chat_messages (world_id, citizen_id, seat_number, display_name, role_title, tier, message, kind)
+  VALUES (p_world_id, p_c.id, p_c.citizen_number, p_c.username, p_c.role_title, p_c.tier_id, left(p_message, 140), 'system');
+  SELECT g.id INTO v_floor FROM public.global_chat_messages g
+  WHERE g.world_id = p_world_id ORDER BY g.id DESC OFFSET 149 LIMIT 1;
+  IF v_floor IS NOT NULL THEN
+    DELETE FROM public.global_chat_messages WHERE world_id = p_world_id AND id < v_floor;
+  END IF;
+END;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 4. Gaji Harian (1x / 24 jam): 50 + bonus jabatan + bonus properti
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.claim_daily_salary(p_world_id TEXT, p_citizen_id UUID, p_token UUID)
+RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+DECLARE
+  v_c public.citizens;
+  v_next TIMESTAMPTZ;
+  v_rank INTEGER;
+  v_prop BIGINT;
+  v_total BIGINT;
+  v_now TIMESTAMPTZ := now();
+BEGIN
+  PERFORM public.nv_get_world(p_world_id);
+  v_c := public.nv_auth_citizen(p_world_id, p_citizen_id, p_token); -- FOR UPDATE: anti klaim ganda paralel
+  v_next := v_c.last_salary_at + INTERVAL '24 hours';
+  IF v_next IS NOT NULL AND v_next > v_now THEN
+    RAISE EXCEPTION 'Gaji hari ini sudah diambil. Tersedia lagi dalam %.', public.nv_fmt_wait(v_next - v_now);
+  END IF;
+  v_rank := public.nv_rank_salary_bonus(v_c.citizen_number);
+  v_prop := public.nv_property_salary_bonus(p_world_id, v_c.id);
+  v_total := 50 + v_rank + v_prop;
+  UPDATE public.citizens
+  SET coins = coins + v_total, last_salary_at = v_now, last_active_at = v_now
+  WHERE id = v_c.id
+  RETURNING * INTO v_c;
+  RETURN jsonb_build_object(
+    'reward', v_total, 'base', 50, 'rank_bonus', v_rank, 'property_bonus', v_prop,
+    'coins', v_c.coins, 'citizen', public.nv_citizen_private(v_c));
+END;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 5. Kerja Cepat (+25, jeda 2 jam, maks 3x per hari WIB)
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.do_quick_work(p_world_id TEXT, p_citizen_id UUID, p_token UUID)
+RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+DECLARE
+  v_c public.citizens;
+  v_today DATE := (now() AT TIME ZONE 'Asia/Jakarta')::date;
+  v_count INTEGER;
+  v_next TIMESTAMPTZ;
+  v_labels TEXT[] := ARRAY[
+    'Jaga Warung Madura', 'Narik Ojol Alun-Alun', 'Rapat Lembur DPR', 'Bantu Cor Stasiun',
+    'Jadi Kang Parkir Minimarket', 'Antar Paket Kilat', 'Jualan Cilok Depan Istana', 'Bikin Konten FYP'];
+  v_label TEXT;
+BEGIN
+  PERFORM public.nv_get_world(p_world_id);
+  v_c := public.nv_auth_citizen(p_world_id, p_citizen_id, p_token);
+  v_count := CASE WHEN v_c.quick_work_date = v_today THEN v_c.quick_work_count ELSE 0 END;
+  IF v_count >= 3 THEN
+    RAISE EXCEPTION 'Jatah Kerja Cepat hari ini habis (3/3). Balik lagi besok ya!';
+  END IF;
+  v_next := v_c.quick_work_at + INTERVAL '2 hours';
+  IF v_next IS NOT NULL AND v_next > now() THEN
+    RAISE EXCEPTION 'Masih capek habis kerja! Coba lagi dalam %.', public.nv_fmt_wait(v_next - now());
+  END IF;
+  v_label := v_labels[1 + floor(random() * array_length(v_labels, 1))::int];
+  UPDATE public.citizens
+  SET coins = coins + 25, quick_work_at = now(), quick_work_date = v_today, quick_work_count = v_count + 1, last_active_at = now()
+  WHERE id = v_c.id
+  RETURNING * INTO v_c;
+  RETURN jsonb_build_object('reward', 25, 'label', v_label, 'coins', v_c.coins,
+                            'remaining', 3 - (v_count + 1), 'citizen', public.nv_citizen_private(v_c));
+END;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 6. Misi Warga Baru (sekali klaim, progres dicek di server)
+--    first_salary +30 | first_chat +30 | first_emote +20 | first_donation +40 (Donatur Perintis)
+--    Catatan: emote dikirim via Realtime Broadcast (tanpa DB), jadi first_emote hanya dibatasi sekali klaim.
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.claim_mission(p_world_id TEXT, p_citizen_id UUID, p_token UUID, p_mission TEXT)
+RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+DECLARE
+  v_c public.citizens;
+  v_reward INTEGER;
+  v_done BOOLEAN;
+  v_hint TEXT;
+BEGIN
+  PERFORM public.nv_get_world(p_world_id);
+  v_c := public.nv_auth_citizen(p_world_id, p_citizen_id, p_token);
+  CASE p_mission
+    WHEN 'first_salary' THEN
+      v_reward := 30; v_done := v_c.last_salary_at IS NOT NULL; v_hint := 'Klaim Gaji Harian dulu.';
+    WHEN 'first_chat' THEN
+      v_reward := 30; v_hint := 'Kirim 1 pesan di Global Chat dulu.';
+      v_done := v_c.last_chat_at IS NOT NULL OR EXISTS (
+        SELECT 1 FROM public.global_chat_messages g WHERE g.citizen_id = v_c.id AND g.kind = 'chat');
+    WHEN 'first_emote' THEN
+      v_reward := 20; v_done := TRUE; v_hint := '';
+    WHEN 'first_donation' THEN
+      v_reward := 40; v_hint := 'Patungan minimal 10 RpK ke Proyek Stasiun dulu.';
+      v_done := coalesce((SELECT sum(d.amount) FROM public.project_donations d
+                          WHERE d.world_id = p_world_id AND d.citizen_id = v_c.id), 0) >= 10;
+    ELSE
+      RAISE EXCEPTION 'Misi tidak dikenal.';
+  END CASE;
+  IF v_c.claimed_missions ? p_mission THEN
+    RAISE EXCEPTION 'Hadiah misi ini sudah kamu ambil.';
+  END IF;
+  IF NOT v_done THEN
+    RAISE EXCEPTION 'Misi belum selesai. %', v_hint;
+  END IF;
+  UPDATE public.citizens
+  SET coins = coins + v_reward,
+      claimed_missions = claimed_missions || jsonb_build_object(p_mission, now()),
+      last_active_at = now()
+  WHERE id = v_c.id
+  RETURNING * INTO v_c;
+  RETURN jsonb_build_object('reward', v_reward, 'mission', p_mission, 'coins', v_c.coins, 'citizen', public.nv_citizen_private(v_c));
+END;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 7. Beli Properti & Usaha RT (atomik, saldo tidak pernah minus)
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.buy_property(p_world_id TEXT, p_citizen_id UUID, p_token UUID, p_property_type TEXT)
+RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+DECLARE
+  v_world public.world_states;
+  v_c public.citizens;
+  v_t public.property_types;
+  v_top TEXT;
+BEGIN
+  v_world := public.nv_get_world(p_world_id);
+  v_c := public.nv_auth_citizen(p_world_id, p_citizen_id, p_token); -- FOR UPDATE
+  -- Mengikuti aturan dunia yang sama dengan beli kavling (requireVerified.buyLand).
+  PERFORM public.nv_require_verified(v_world, v_c, 'buyLand');
+
+  SELECT * INTO v_t FROM public.property_types WHERE world_id = p_world_id AND id = p_property_type;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Properti tidak ditemukan di katalog.'; END IF;
+  IF EXISTS (SELECT 1 FROM public.citizen_properties WHERE citizen_id = v_c.id AND property_type = v_t.id) THEN
+    RAISE EXCEPTION 'Kamu sudah punya %.', v_t.name;
+  END IF;
+  IF v_c.coins < v_t.price THEN
+    RAISE EXCEPTION 'Saldo kurang % RpK untuk membeli %.', v_t.price - v_c.coins, v_t.name;
+  END IF;
+
+  UPDATE public.citizens SET coins = coins - v_t.price, last_active_at = now() WHERE id = v_c.id;
+  INSERT INTO public.citizen_properties (world_id, citizen_id, property_type, rt_label)
+  VALUES (p_world_id, v_c.id, v_t.id, split_part(v_c.rt_rw_address, ' • ', 1));
+
+  SELECT t.name INTO v_top
+  FROM public.citizen_properties cp
+  JOIN public.property_types t ON t.world_id = cp.world_id AND t.id = cp.property_type
+  WHERE cp.citizen_id = v_c.id
+  ORDER BY t.price DESC LIMIT 1;
+
+  UPDATE public.citizens SET top_property = v_top WHERE id = v_c.id RETURNING * INTO v_c;
+
+  PERFORM public.nv_news(p_world_id, v_c.id, 'property',
+    format('%s #%s %s membeli %s di %s!', v_t.emoji, public.nv_pad(v_c.citizen_number, 4), v_c.username, v_t.name,
+           split_part(v_c.rt_rw_address, ' • ', 1)));
+
+  RETURN jsonb_build_object('coins', v_c.coins, 'property_type', v_t.id, 'top_property', v_top,
+                            'citizen', public.nv_citizen_private(v_c));
+END;
+$$;
+
+-- Daftar pemilik usaha/properti terbaru (bikin RT terasa hidup).
+CREATE OR REPLACE FUNCTION public.get_property_owners(p_world_id TEXT, p_limit INTEGER DEFAULT 20)
+RETURNS JSONB LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp AS $$
+  SELECT coalesce(jsonb_agg(row_to_json(x)::jsonb ORDER BY x.purchased_at DESC), '[]'::jsonb)
+  FROM (
+    SELECT cp.citizen_id, c.citizen_number, c.username, c.role_title, cp.property_type, t.name AS property_name,
+           t.emoji, cp.rt_label, cp.purchased_at
+    FROM public.citizen_properties cp
+    JOIN public.citizens c ON c.id = cp.citizen_id
+    JOIN public.property_types t ON t.world_id = cp.world_id AND t.id = cp.property_type
+    WHERE cp.world_id = p_world_id
+    ORDER BY cp.purchased_at DESC
+    LIMIT least(greatest(coalesce(p_limit, 20), 1), 50)
+  ) x
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 8. Top 10 Donatur Proyek (badge kursi + nama + jabatan)
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.get_project_donor_board(p_world_id TEXT, p_project_id TEXT, p_limit INTEGER DEFAULT 10)
+RETURNS JSONB LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp AS $$
+  SELECT coalesce(jsonb_agg(row_to_json(x)::jsonb ORDER BY x.rank), '[]'::jsonb)
+  FROM (
+    SELECT row_number() OVER (ORDER BY d.amount DESC, c.citizen_number)::int AS rank,
+           d.citizen_id, c.citizen_number, c.username, c.role_title, c.tier_id, d.amount
+    FROM public.project_donations d
+    JOIN public.citizens c ON c.id = d.citizen_id
+    WHERE d.world_id = p_world_id AND d.project_id = p_project_id AND d.amount > 0
+    ORDER BY d.amount DESC, c.citizen_number
+    LIMIT least(greatest(coalesce(p_limit, 10), 1), 50)
+  ) x
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 9. donate_to_project v3: logika lama 100% dipertahankan + pengumuman Global Chat (>= 50 RpK)
+--    (signature sama → hak EXECUTE lama tetap berlaku)
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.donate_to_project(p_world_id TEXT, p_citizen_id UUID, p_token UUID, p_amount BIGINT)
+RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+DECLARE
+  v_world public.world_states;
+  v_c public.citizens;
+  v_coins BIGINT;
+  v_funding BIGINT;
+  v_done TEXT := NULL;
+  v_done_name TEXT;
+  v_next JSONB;
+  v_completed TEXT[];
+  v_project_id TEXT;
+  v_project_name TEXT;
+BEGIN
+  v_world := public.nv_get_world(p_world_id);
+  v_c := public.nv_auth_citizen(p_world_id, p_citizen_id, p_token);
+  PERFORM public.nv_require_verified(v_world, v_c, 'donate');
+  IF p_amount IS NULL OR p_amount < 1 THEN RAISE EXCEPTION 'Jumlah sumbangan minimal 1.'; END IF;
+  IF v_c.coins < p_amount THEN RAISE EXCEPTION 'Saldo tidak cukup untuk menyumbang sebanyak itu.'; END IF;
+
+  -- Kunci state dunia (urutan lock: citizen → world, konsisten di semua fungsi)
+  SELECT * INTO v_world FROM public.world_states WHERE world_id = p_world_id FOR UPDATE;
+  IF v_world.active_project_completed OR v_world.active_project_id = '' THEN
+    RAISE EXCEPTION 'Belum ada proyek nasional aktif. Tunggu proyek baru dari Presiden/Admin.';
+  END IF;
+  v_project_id := v_world.active_project_id;
+  SELECT p->>'name' INTO v_project_name FROM jsonb_array_elements(v_world.config->'projects') p WHERE p->>'id' = v_project_id;
+
+  UPDATE public.citizens
+  SET coins = coins - p_amount, total_donated = total_donated + p_amount, last_active_at = now()
+  WHERE id = v_c.id RETURNING coins INTO v_coins;
+
+  INSERT INTO public.project_donations (world_id, project_id, citizen_id, amount)
+  VALUES (p_world_id, v_world.active_project_id, v_c.id, p_amount)
+  ON CONFLICT (world_id, project_id, citizen_id)
+  DO UPDATE SET amount = public.project_donations.amount + EXCLUDED.amount, updated_at = now();
+
+  v_funding := v_world.active_project_funding + p_amount;
+
+  IF v_world.active_project_goal > 0 AND v_funding >= v_world.active_project_goal THEN
+    v_done := v_world.active_project_id;
+    v_completed := array_append(v_world.completed_projects, v_done);
+    SELECT p->>'name' INTO v_done_name FROM jsonb_array_elements(v_world.config->'projects') p WHERE p->>'id' = v_done;
+    PERFORM public.nv_news(p_world_id, NULL, 'project',
+      format('PROYEK NASIONAL SELESAI! %s resmi beroperasi berkat gotong royong warga!', coalesce(v_done_name, v_done)));
+
+    SELECT p.value INTO v_next
+    FROM jsonb_array_elements(v_world.config->'projects') WITH ORDINALITY p(value, idx)
+    WHERE NOT ((p.value->>'id') = ANY (v_completed))
+    ORDER BY p.idx LIMIT 1;
+
+    IF v_next IS NOT NULL THEN
+      UPDATE public.world_states
+      SET completed_projects = v_completed,
+          active_project_id = v_next->>'id',
+          active_project_goal = (v_next->>'goal')::bigint,
+          active_project_funding = least(v_funding - v_world.active_project_goal, (v_next->>'goal')::bigint - 1),
+          active_project_completed = FALSE,
+          updated_at = now()
+      WHERE world_id = p_world_id
+      RETURNING * INTO v_world;
+      PERFORM public.nv_news(p_world_id, NULL, 'project',
+        format('Proyek berikutnya dimulai: %s %s. Ayo patungan!', v_next->>'emoji', v_next->>'name'));
+    ELSE
+      UPDATE public.world_states
+      SET completed_projects = v_completed,
+          active_project_funding = active_project_goal,
+          active_project_completed = TRUE,
+          updated_at = now()
+      WHERE world_id = p_world_id
+      RETURNING * INTO v_world;
+    END IF;
+  ELSE
+    UPDATE public.world_states SET active_project_funding = v_funding, updated_at = now()
+    WHERE world_id = p_world_id
+    RETURNING * INTO v_world;
+  END IF;
+
+  -- v3: pengumuman gengsi di Global Chat untuk donasi besar
+  IF p_amount >= 50 THEN
+    PERFORM public.nv_chat_system(p_world_id, v_c,
+      format('baru saja menyumbang %s %s untuk %s! 🏛️', p_amount,
+             coalesce(v_world.config->'currency'->>'code', 'koin'), coalesce(v_project_name, 'Proyek Nasional')));
+  END IF;
+
+  RETURN jsonb_build_object('coins', v_coins, 'world', public.nv_world_json(v_world), 'completed_project_id', v_done);
+END;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 10. Hak eksekusi
+-- -----------------------------------------------------------------------------
+REVOKE ALL ON FUNCTION public.nv_rank_salary_bonus(INTEGER) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.nv_property_salary_bonus(TEXT, UUID) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.nv_chat_system(TEXT, public.citizens, TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.claim_daily_salary(TEXT, UUID, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.do_quick_work(TEXT, UUID, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.claim_mission(TEXT, UUID, UUID, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.buy_property(TEXT, UUID, UUID, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.get_property_owners(TEXT, INTEGER) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.get_project_donor_board(TEXT, TEXT, INTEGER) FROM PUBLIC;
+
+GRANT EXECUTE ON FUNCTION
+  public.claim_daily_salary(TEXT, UUID, UUID),
+  public.do_quick_work(TEXT, UUID, UUID),
+  public.claim_mission(TEXT, UUID, UUID, TEXT),
+  public.buy_property(TEXT, UUID, UUID, TEXT),
+  public.get_property_owners(TEXT, INTEGER),
+  public.get_project_donor_board(TEXT, TEXT, INTEGER),
+  public.donate_to_project(TEXT, UUID, UUID, BIGINT)
+TO anon, authenticated;
+
+-- Cek cepat (opsional):
+--   SELECT * FROM public.property_types WHERE world_id = 'republik-konoha' ORDER BY sort;   -- 5 baris
+--   SELECT column_name FROM information_schema.columns WHERE table_name = 'citizens'
+--     AND column_name IN ('last_salary_at','quick_work_count','claimed_missions','top_property');
 
 
 -- >>> seed.sql

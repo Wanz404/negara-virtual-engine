@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ButtonHTMLAttributes, type PointerEvent as RPointerEvent, type ReactNode, type Ref } from 'react';
 import { playClick } from '../lib/fx';
+import { BUSY_MESSAGE } from '../services/types';
 
 const SHEET_ENTER = 'transform 460ms cubic-bezier(0.22, 1.28, 0.36, 1)';
 const SHEET_EXIT = 'transform 240ms cubic-bezier(0.4, 0, 1, 1)';
@@ -254,5 +255,9 @@ export function ToastStack({ toasts }: { toasts: Toast[] }) {
 }
 
 export function errorMessage(e: unknown): string {
+  // Timeout / jaringan putus (mis. fetch langsung ke edge function) → pesan ramah yang sama dengan adapter.
+  if (e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError' || /failed to fetch|networkerror|load failed/i.test(e.message))) {
+    return BUSY_MESSAGE;
+  }
   return e instanceof Error ? e.message : String(e);
 }

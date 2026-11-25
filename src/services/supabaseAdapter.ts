@@ -3,6 +3,7 @@ import type { WorldConfig } from '../configs/types';
 import { mapChat, mapCitizen, mapDonor, mapDonorBoard, mapPropertyOwner, mapPropertyType, mapLeaderboard, mapMyCitizen, mapNews, mapPlot, mapPoll, mapWorld } from './mappers';
 import {
   ApiError,
+  BUSY_MESSAGE,
   type EmoteEvent,
   type NationApi,
   type PresenceIdentity,
@@ -40,19 +41,53 @@ interface PublicSnapshot {
 const SNAPSHOT_REUSE_MS = 30_000;
 /** Endpoint gagal → langsung ke Supabase dulu selama ini sebelum mencoba edge lagi. */
 const SNAPSHOT_BACKOFF_MS = 60_000;
+/** Edge gagal tapi klien masih punya snapshot lama → coba edge lagi setelah ini (tanpa menyentuh Supabase). */
+const SNAPSHOT_RETRY_MS = 20_000;
+/** Snapshot lama masih layak ditampilkan saat edge/Supabase down selama ini. */
+const LAST_GOOD_MAX_MS = 15 * 60_000;
+/** Batas tunggu setiap request ke Supabase — tombol tidak boleh berputar selamanya saat server padat. */
+const REQUEST_TIMEOUT_MS = 12_000;
+
+/** fetch dengan batas waktu: dipakai supabase-js untuk semua query REST/RPC (bukan Realtime). */
+const fetchWithTimeout: typeof fetch = (input, init) => {
+  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  const signal = init?.signal ? anySignal([init.signal, timeout]) : timeout;
+  return fetch(input, { ...init, signal });
+};
+
+function anySignal(signals: AbortSignal[]): AbortSignal {
+  const ctrl = new AbortController();
+  for (const s of signals) {
+    if (s.aborted) return s;
+    s.addEventListener('abort', () => ctrl.abort(s.reason), { once: true });
+  }
+  return ctrl.signal;
+}
+
+/** Error jaringan/timeout/server kewalahan → pesan ramah yang sama di semua tempat. */
+function friendly(message: string): string {
+  return /abort|timeout|timed out|failed to fetch|networkerror|load failed|connection|upstream|HTTP 5\d\d|\b50[234]\b/i.test(message) ? BUSY_MESSAGE : message;
+}
 
 export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapterOptions): NationApi {
   const sb: SupabaseClient = createClient(opts.url, opts.anonKey, {
     auth: { persistSession: false, autoRefreshToken: false },
     realtime: { params: { eventsPerSecond: 2 } },
+    global: { fetch: fetchWithTimeout },
   });
   const W = config.worldId;
 
   async function rpc<T = any>(fn: string, args: Record<string, unknown>): Promise<T> {
     // Aksi tulis (warga/admin) → baca berikutnya dari perangkat ini langsung ke Supabase agar hasilnya langsung terlihat.
     if (!fn.startsWith('get_') && ('p_token' in args || 'p_admin_secret' in args)) markWrite();
-    const { data, error } = await sb.rpc(fn, args);
-    if (error) throw new ApiError(error.message);
+    let res;
+    try {
+      res = await sb.rpc(fn, args);
+    } catch (e) {
+      throw new ApiError(friendly(e instanceof Error ? `${e.name}: ${e.message}` : String(e)));
+    }
+    const { data, error } = res;
+    if (error) throw new ApiError(friendly(error.message));
     if (data && typeof data === 'object' && (data as { ok?: boolean }).ok === false) {
       throw new ApiError(String((data as { error?: string }).error ?? 'Ditolak.'));
     }
@@ -61,38 +96,50 @@ export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapter
 
   const auth = (s: Session) => ({ p_world_id: W, p_citizen_id: s.citizenId, p_token: s.token });
 
-  // --- Perisai trafik: data baca publik lewat /api/snapshot (edge cache 10 dtk), fallback otomatis ke Supabase ---
+  // --- Perisai trafik: data baca publik lewat /api/snapshot (edge cache 30 dtk); Supabase hanya bila belum pernah dapat snapshot ---
   let snap: { data: PublicSnapshot; at: number } | null = null;
   let snapInflight: Promise<PublicSnapshot | null> | null = null;
   let snapDownUntil = 0;
-  /** Setelah aksi tulis, lewati snapshot (edge bisa basi ≤10 dtk + cache klien) selama jendela ini. */
+  /** Setelah aksi tulis, lewati snapshot (edge bisa basi ≤30 dtk + cache klien) selama jendela ini. */
   let bypassUntil = 0;
   function markWrite(): void {
     snap = null;
     bypassUntil = Date.now() + SNAPSHOT_REUSE_MS;
   }
 
+  /** Snapshot sah terakhir (tidak dihapus oleh markWrite) — dipakai saat edge gagal agar klien TIDAK menyerbu Supabase. */
+  let lastGood: { data: PublicSnapshot; at: number } | null = null;
+  const usableLastGood = () => (lastGood && Date.now() - lastGood.at < LAST_GOOD_MAX_MS ? lastGood.data : null);
+
+  async function fetchSnapshot(url: string): Promise<PublicSnapshot> {
+    // Edge biasanya menjawab instan (HIT/STALE); hanya build pertama yang menunggu Supabase.
+    const res = await fetch(url, { signal: AbortSignal.timeout(15_000), headers: { Accept: 'application/json' } });
+    if (!res.ok || !(res.headers.get('content-type') ?? '').includes('application/json')) throw new Error(`snapshot HTTP ${res.status}`);
+    const body = (await res.json()) as PublicSnapshot;
+    if (body?.v !== 1 || body.world?.world_id !== W || !Array.isArray(body.citizens)) throw new Error('snapshot tidak valid');
+    return body;
+  }
+
   function snapshot(): Promise<PublicSnapshot | null> {
-    if (!opts.snapshotUrl || Date.now() < snapDownUntil || Date.now() < bypassUntil) return Promise.resolve(null);
+    if (!opts.snapshotUrl || Date.now() < bypassUntil) return Promise.resolve(null);
+    if (Date.now() < snapDownUntil) return Promise.resolve(usableLastGood());
     if (snap && Date.now() - snap.at < SNAPSHOT_REUSE_MS) return Promise.resolve(snap.data);
     if (snapInflight) return snapInflight;
-    const ctrl = new AbortController();
-    // Edge biasanya menjawab instan (HIT/STALE); hanya build pertama yang menunggu Supabase.
-    const timeout = setTimeout(() => ctrl.abort(), 15_000);
-    snapInflight = fetch(opts.snapshotUrl, { signal: ctrl.signal, headers: { Accept: 'application/json' } })
-      .then(async (res) => {
-        if (!res.ok || !(res.headers.get('content-type') ?? '').includes('application/json')) throw new Error(`snapshot HTTP ${res.status}`);
-        const body = (await res.json()) as PublicSnapshot;
-        if (body?.v !== 1 || body.world?.world_id !== W || !Array.isArray(body.citizens)) throw new Error('snapshot tidak valid');
-        snap = { data: body, at: Date.now() };
-        return body;
+    const url = opts.snapshotUrl;
+    snapInflight = fetchSnapshot(url)
+      // Edge sedang "warming" (503) → tunggu sebentar & coba sekali lagi sebelum menyerah.
+      .catch(() => new Promise<void>((r) => setTimeout(r, 3_000 + Math.random() * 3_000)).then(() => fetchSnapshot(url)))
+      .then((body) => {
+        snap = lastGood = { data: body, at: Date.now() };
+        return body as PublicSnapshot | null;
       })
       .catch(() => {
-        snapDownUntil = Date.now() + SNAPSHOT_BACKOFF_MS;
-        return null;
+        const fallback = usableLastGood();
+        // Punya salinan lama → tetap pakai itu & coba edge lagi sebentar lagi. Tidak punya → baru boleh ke Supabase.
+        snapDownUntil = Date.now() + (fallback ? SNAPSHOT_RETRY_MS : SNAPSHOT_BACKOFF_MS);
+        return fallback;
       })
       .finally(() => {
-        clearTimeout(timeout);
         snapInflight = null;
       });
     return snapInflight;
@@ -188,6 +235,7 @@ export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapter
       if (opts.registerVia === 'edge') {
         const res = await fetch(`${opts.url}/functions/v1/register-citizen`, {
           method: 'POST',
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
           headers: {
             'Content-Type': 'application/json',
             apikey: opts.anonKey,
@@ -203,7 +251,7 @@ export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapter
           }),
         });
         const body = await res.json().catch(() => ({}));
-        if (!res.ok) throw new ApiError(body.error ?? `Pendaftaran gagal (HTTP ${res.status}).`);
+        if (!res.ok) throw new ApiError(body.error ?? (res.status >= 500 ? BUSY_MESSAGE : `Pendaftaran gagal (HTTP ${res.status}).`));
         raw = body.citizen;
       } else {
         raw = await rpc('register_citizen_direct', {

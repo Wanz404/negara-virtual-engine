@@ -2,8 +2,8 @@
  * GET /api/snapshot — perisai trafik read-only untuk data publik utama.
  *
  * Cloudflare Pages Function: menyatukan world_states + get_map_citizens (publik, p_me = null) + news_feed +
- * kavling ber-pemilik (land_plots, ring terbuka) jadi 1 JSON, lalu menyimpannya di Cache API edge selama 10 dtk.
- * Ribuan pengunjung bersamaan → ±1 batch query ke Supabase tiap 10 dtk per lokasi edge.
+ * kavling ber-pemilik (land_plots, ring terbuka) jadi 1 JSON, lalu menyimpannya di Cache API edge selama 30 dtk.
+ * Ribuan pengunjung bersamaan → ±1 batch query ke Supabase tiap 30 dtk per lokasi edge.
  *
  * Kredensial = URL + anon/publishable key yang memang sudah publik di bundle frontend; ditulis ke
  * ./_env.generated.ts oleh scripts/deploy-world.mjs saat deploy (file itu tidak di-commit).
@@ -16,8 +16,8 @@ interface Ctx {
   waitUntil(p: Promise<unknown>): void;
 }
 
-const EDGE_TTL = 10;
-const SWR = 30;
+const EDGE_TTL = 30;
+const SWR = 60;
 const WORLD_COLUMNS =
   'world_id, ig_account_handle, last_citizen_number, day_number, ig_follower_count, followers_synced_at, current_ring_unlocked, active_project_id, active_project_funding, active_project_goal, active_project_completed, completed_projects, president_announcement, announcement_at, updated_at';
 const PLOT_COLUMNS =
@@ -51,7 +51,7 @@ async function build(): Promise<Record<string, unknown>> {
   return { v: 1, generatedAt: new Date().toISOString(), world, citizens: citizens ?? [], news: news ?? [], plots, plotRings };
 }
 
-/** Salinan segar (10 dtk) + salinan cadangan (1 jam) + kunci refresh (20 dtk) di cache edge yang sama. */
+/** Salinan segar (30 dtk) + salinan cadangan (1 jam) + kunci refresh (45 dtk) di cache edge yang sama. */
 const STALE_TTL = 3600;
 const LOCK_TTL = 45;
 function cached(body: string, ttl: number): Response {

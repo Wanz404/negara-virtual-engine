@@ -51,6 +51,8 @@ const RING_STALE_MS = 5 * 60_000;
 const NO_MEMBERS: PresenceMember[] = [];
 
 const pollDelay = () => POLL_MIN_MS + Math.random() * POLL_JITTER_MS;
+/** Data pribadi (get_my_citizen) cukup jarang: tiap panggilan menyentuh baris citizens di database. */
+const mePollDelay = () => 5 * 60_000 + Math.random() * 60_000;
 
 type ModalName = 'register' | 'recover' | 'ktp' | 'status' | 'admin' | 'dev' | 'news' | 'leaderboard' | 'gov' | 'chat' | 'economy' | null;
 type Sheet = { type: 'plot'; code: string } | { type: 'citizen'; id: string } | { type: 'landmark'; id: string } | null;
@@ -292,17 +294,17 @@ export default function App() {
       if (cancelled) return;
       timer = setTimeout(async () => {
         if (cancelled) return;
-        if (document.hidden) return schedule(pollDelay());
+        if (document.hidden) return schedule(mePollDelay());
         const ok = await refreshMe();
         if (cancelled) return;
         failures = ok ? 0 : failures + 1;
-        schedule(ok ? pollDelay() : Math.min(60_000, 15_000 * 2 ** Math.min(failures - 1, 2)));
+        schedule(ok ? mePollDelay() : Math.min(120_000, 30_000 * 2 ** Math.min(failures - 1, 2)));
       }, delay);
     };
     void refreshMe().then((ok) => {
       if (cancelled) return;
       failures = ok ? 0 : 1;
-      schedule(ok ? pollDelay() : 15_000);
+      schedule(ok ? mePollDelay() : 30_000);
     });
     return () => { cancelled = true; clearTimeout(timer); };
   }, [refreshMe]);

@@ -75,6 +75,8 @@ const upgradeV2 = readFileSync(resolve(root, 'supabase/migrations/upgrade_v2_soc
 await db.exec(upgradeV2);
 const upgradeV3 = readFileSync(resolve(root, 'supabase/migrations/upgrade_v3_economy_ux.sql'), 'utf8');
 await db.exec(upgradeV3);
+await db.exec(readFileSync(resolve(root, 'supabase/migrations/003_quick_login_username.sql'), 'utf8'));
+await db.exec(readFileSync(resolve(root, 'supabase/migrations/004_disk_io_diet.sql'), 'utf8'));
 const worldCount = await one<{ n: number }>('SELECT count(*)::int AS n FROM world_states');
 check('10 dunia ter-seed', worldCount.n === 10, worldCount);
 const zero = await one<{ n: number }>('SELECT count(*)::int AS n FROM citizens');
@@ -131,6 +133,18 @@ console.log('\n▶ Sesi & pemulihan');
 const me = await rpc('get_my_citizen', [W, c1.id, c1.secret_token]);
 check('get_my_citizen dengan token benar', me.citizen_number === 1 && me.has_recovery_pin === false);
 await expectError('Token salah ditolak', rpc('get_my_citizen', [W, c1.id, c2.secret_token]), 'Sesi warga tidak valid');
+{
+  // 004: get_my_citizen tidak menulis last_active_at bila baru saja aktif (< 10 menit) → hemat Disk IO.
+  await db.query(`UPDATE citizens SET last_active_at = now() - interval '2 minutes' WHERE id = $1`, [c1.id]);
+  const before = await one<{ t: string }>(`SELECT last_active_at::text AS t FROM citizens WHERE id = $1`, [c1.id]);
+  await rpc('get_my_citizen', [W, c1.id, c1.secret_token]);
+  const after = await one<{ t: string }>(`SELECT last_active_at::text AS t FROM citizens WHERE id = $1`, [c1.id]);
+  check('get_my_citizen tidak UPDATE bila aktif < 10 menit', before.t === after.t, { before, after });
+  await db.query(`UPDATE citizens SET last_active_at = now() - interval '30 minutes' WHERE id = $1`, [c1.id]);
+  await rpc('get_my_citizen', [W, c1.id, c1.secret_token]);
+  const fresh = await one<{ ok: boolean }>(`SELECT last_active_at > now() - interval '1 minute' AS ok FROM citizens WHERE id = $1`, [c1.id]);
+  check('get_my_citizen memperbarui last_active_at bila > 10 menit', fresh.ok === true);
+}
 await rpc('set_recovery_pin', [W, c1.id, c1.secret_token, '1234']);
 const rec = await rpc('recover_session', [W, 'rk-0001', '1234']);
 check('Pulihkan sesi via KTP + PIN', rec.ok === true && rec.secret_token === c1.secret_token, rec);
