@@ -43,9 +43,11 @@ import { StatusModal } from './components/StatusModal';
 import { Button, ToastStack, errorMessage, useToasts } from './components/ui';
 
 const econ = effectiveEconomy(WORLD, api.mode);
-const POLL_WORLD_MS = 45_000;
-const POLL_MAP_MS = 60_000;
-const RING_STALE_MS = 45_000;
+const POLL_MIN_MS = 60_000;
+const POLL_JITTER_MS = 15_000;
+const RING_STALE_MS = 5 * 60_000;
+
+const pollDelay = () => POLL_MIN_MS + Math.random() * POLL_JITTER_MS;
 
 type ModalName = 'register' | 'recover' | 'ktp' | 'status' | 'admin' | 'dev' | 'news' | 'leaderboard' | 'gov' | 'chat' | 'economy' | null;
 type Sheet = { type: 'plot'; code: string } | { type: 'citizen'; id: string } | { type: 'landmark'; id: string } | null;
@@ -64,7 +66,7 @@ export default function App() {
   const [world, setWorld] = useState<WorldState | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [citizens, setCitizens] = useState<PublicCitizen[]>([]);
-  const [members, setMembers] = useState<PresenceMember[]>([]);
+  const members: PresenceMember[] = [];
   const [session, setSession] = useState<Session | null>(loadSession);
   const [me, setMe] = useState<MyCitizen | null>(null);
   const [myPlotCount, setMyPlotCount] = useState(0);
@@ -80,11 +82,19 @@ export default function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const mapRef = useRef<MapViewHandle>(null);
   const ringCache = useRef(new Map<number, { plots: Plot[]; at: number }>());
+  const ringLoads = useRef(new Set<number>());
+  const ringLoadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const visibleRings = useRef<number[]>([1]);
+  const worldRequest = useRef<Promise<boolean> | null>(null);
+  const mapRequest = useRef<Promise<boolean> | null>(null);
+  const meRequest = useRef<Promise<boolean> | null>(null);
+  const newsRequest = useRef<Promise<boolean> | null>(null);
+  const newsLoaded = useRef(false);
+  const newsFetchedAt = useRef(0);
   const now = useNow();
 
   // Upgrade v2: Global Chat realtime + Emote broadcast
-  const chat = useGlobalChat();
+  const chat = useGlobalChat(modal === 'chat');
   const emotes = useEmotes(me, mapRef);
   const [chatSeenId, setChatSeenId] = useState(0);
   const chatPrimed = useRef(false);
@@ -124,23 +134,45 @@ export default function App() {
   // ---------------------------------------------------------------------------
   // Data (polling ringan, hemat kuota free tier)
   // ---------------------------------------------------------------------------
-  const refreshWorld = useCallback(async () => {
-    try {
-      const [w, n] = await Promise.all([api.getWorldState(), api.getNews(30)]);
+  const refreshWorld = useCallback((): Promise<boolean> => {
+    if (worldRequest.current) return worldRequest.current;
+    const request = api.getWorldState().then((w) => {
       setWorld(w);
-      setNews(n);
       setLoadError(null);
-    } catch (e) {
+      return true;
+    }).catch((e) => {
       setLoadError(errorMessage(e));
-    }
+      return false;
+    }).finally(() => { worldRequest.current = null; });
+    worldRequest.current = request;
+    return request;
   }, []);
 
-  const refreshMap = useCallback(async () => {
-    try {
-      setCitizens(await api.getMapCitizens(session?.citizenId ?? null, 120));
-    } catch {
-      // peta tetap tampil dengan data sebelumnya
-    }
+  const refreshNews = useCallback((): Promise<boolean> => {
+    if (newsRequest.current) return newsRequest.current;
+    const request = api.getNews(30).then((items) => {
+      setNews(items);
+      newsLoaded.current = true;
+      newsFetchedAt.current = Date.now();
+      return true;
+    }).catch(() => {
+      return false;
+    }).finally(() => { newsRequest.current = null; });
+    newsRequest.current = request;
+    return request;
+  }, []);
+
+  const refreshMap = useCallback((): Promise<boolean> => {
+    if (mapRequest.current) return mapRequest.current;
+    const request = api.getMapCitizens(session?.citizenId ?? null, 120).then((items) => {
+      setCitizens(items);
+      return true;
+    }).catch(() => {
+      setLoadError('Gagal memuat data peta.');
+      return false;
+    }).finally(() => { mapRequest.current = null; });
+    mapRequest.current = request;
+    return request;
   }, [session?.citizenId]);
 
   const publishPlots = useCallback(() => {
@@ -150,14 +182,17 @@ export default function App() {
   /** Ambil kavling ber-pemilik hanya untuk ring yang terlihat kamera (dan sudah basi). */
   const loadRings = useCallback(
     async (rings: number[], force = false) => {
-      const stale = rings.filter((r) => force || !ringCache.current.has(r) || Date.now() - ringCache.current.get(r)!.at > RING_STALE_MS);
+      const stale = rings.filter((r) => !ringLoads.current.has(r) && (force || !ringCache.current.has(r) || Date.now() - ringCache.current.get(r)!.at > RING_STALE_MS));
       if (stale.length === 0) return;
+      stale.forEach((r) => ringLoads.current.add(r));
       try {
         const plots = await api.getOwnedPlots(stale);
         for (const r of stale) ringCache.current.set(r, { plots: plots.filter((p) => p.ringLevel === r), at: Date.now() });
         publishPlots();
       } catch {
         // abaikan: dicoba lagi saat polling berikutnya
+      } finally {
+        stale.forEach((r) => ringLoads.current.delete(r));
       }
     },
     [publishPlots],
@@ -173,51 +208,129 @@ export default function App() {
     [publishPlots],
   );
 
-  const refreshMe = useCallback(async () => {
+  const refreshMe = useCallback((): Promise<boolean> => {
     if (!session) {
       setMe(null);
       setMyPlotCount(0);
-      return;
+      return Promise.resolve(true);
     }
-    try {
-      const c = await api.getMe(session);
+    if (meRequest.current) return meRequest.current;
+    const request = api.getMe(session).then((c) => {
       if (!c) {
         saveSession(null);
         setSession(null);
         setMe(null);
-        return;
+        return true;
       }
       setMe(c);
-      const rings = Array.from({ length: Math.max(1, world?.currentRingUnlocked ?? 1) }, (_, i) => i + 1);
-      const plots = await api.getOwnedPlots(rings);
-      setMyPlotCount(plots.filter((p) => p.ownerCitizenId === c.id).length);
-    } catch (e) {
-      toast(errorMessage(e), 'error');
-    }
-  }, [session, world?.currentRingUnlocked, toast]);
+      return true;
+    }).catch((e) => {
+      setLoadError(errorMessage(e));
+      return false;
+    }).finally(() => { meRequest.current = null; });
+    meRequest.current = request;
+    return request;
+  }, [session]);
 
   useEffect(() => {
-    void refreshWorld();
-    const t = setInterval(() => document.visibilityState === 'visible' && void refreshWorld(), POLL_WORLD_MS);
-    return () => clearInterval(t);
+    let timer: ReturnType<typeof setTimeout>;
+    let failures = 0;
+    let cancelled = false;
+    const schedule = (delay: number) => {
+      if (cancelled) return;
+      timer = setTimeout(async () => {
+        if (cancelled) return;
+        if (document.hidden) return schedule(pollDelay());
+        const ok = await refreshWorld();
+        if (cancelled) return;
+        failures = ok ? 0 : failures + 1;
+        schedule(ok ? pollDelay() : Math.min(60_000, 15_000 * 2 ** Math.min(failures - 1, 2)));
+      }, delay);
+    };
+    void refreshWorld().then((ok) => {
+      if (cancelled) return;
+      failures = ok ? 0 : 1;
+      schedule(ok ? pollDelay() : 15_000);
+    });
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [refreshWorld]);
 
   useEffect(() => {
-    void refreshMap();
-    const t = setInterval(() => {
-      if (document.visibilityState !== 'visible') return;
-      void refreshMap();
-      void loadRings(visibleRings.current);
-    }, POLL_MAP_MS);
-    return () => clearInterval(t);
+    let timer: ReturnType<typeof setTimeout>;
+    let failures = 0;
+    let cancelled = false;
+    const schedule = (delay: number) => {
+      if (cancelled) return;
+      timer = setTimeout(async () => {
+        if (cancelled) return;
+        if (document.hidden) return schedule(pollDelay());
+        const ok = await refreshMap();
+        if (cancelled) return;
+        failures = ok ? 0 : failures + 1;
+        schedule(ok ? pollDelay() : Math.min(60_000, 15_000 * 2 ** Math.min(failures - 1, 2)));
+      }, delay);
+    };
+    void refreshMap().then((ok) => {
+      if (cancelled) return;
+      failures = ok ? 0 : 1;
+      schedule(ok ? pollDelay() : 15_000);
+    });
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [refreshMap, loadRings]);
 
   useEffect(() => {
-    void refreshMe();
+    let timer: ReturnType<typeof setTimeout>;
+    let failures = 0;
+    let cancelled = false;
+    const schedule = (delay: number) => {
+      if (cancelled) return;
+      timer = setTimeout(async () => {
+        if (cancelled) return;
+        if (document.hidden) return schedule(pollDelay());
+        const ok = await refreshMe();
+        if (cancelled) return;
+        failures = ok ? 0 : failures + 1;
+        schedule(ok ? pollDelay() : Math.min(60_000, 15_000 * 2 ** Math.min(failures - 1, 2)));
+      }, delay);
+    };
+    void refreshMe().then((ok) => {
+      if (cancelled) return;
+      failures = ok ? 0 : 1;
+      schedule(ok ? pollDelay() : 15_000);
+    });
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [refreshMe]);
 
+  // Feed sekunder dimuat sekali setelah peta siap; pembukaan panel menyegarkan cache yang sudah lama.
   useEffect(() => {
+    if (!world || newsLoaded.current) return;
+    let timer: ReturnType<typeof setTimeout>;
+    let cancelled = false;
+    let failures = 0;
+    const schedule = (delay: number) => {
+      timer = setTimeout(async () => {
+        if (cancelled || newsLoaded.current) return;
+        if (document.hidden) return schedule(pollDelay());
+        const ok = await refreshNews();
+        if (cancelled || ok) return;
+        failures += 1;
+        schedule(Math.min(60_000, 15_000 * 2 ** Math.min(failures - 1, 2)));
+      }, delay);
+    };
+    schedule(3_000 + Math.random() * 2_000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [world, refreshNews]);
+
+  useEffect(() => {
+    if (modal === 'news' && Date.now() - newsFetchedAt.current >= POLL_MIN_MS) void refreshNews();
+  }, [modal, refreshNews]);
+
+  useEffect(() => {
+    let lastFocusRefresh = 0;
     const onFocus = () => {
+      if (document.hidden) return;
+      if (Date.now() - lastFocusRefresh < POLL_MIN_MS) return;
+      lastFocusRefresh = Date.now();
       void refreshMe();
       void refreshWorld();
     };
@@ -256,7 +369,7 @@ export default function App() {
         : { kind: 'guest' as const, tag: guestTag(), citizenId: null, color: WORLD.registration.avatarColors[3] },
     [me?.id, me?.username, me?.citizenNumber, me?.avatarColor], // eslint-disable-line react-hooks/exhaustive-deps
   );
-  useEffect(() => api.joinPresence(presenceIdentity, setMembers), [presenceIdentity]);
+  // Production landing page does not open Presence channels; online count stays zero to save slots.
 
   // ---------------------------------------------------------------------------
   // Peta
@@ -289,10 +402,31 @@ export default function App() {
   const onVisibleRings = useCallback(
     (rings: number[]) => {
       visibleRings.current = rings;
-      void loadRings(rings);
+      // Biarkan world + peta inti selesai lebih dulu sebelum meminta data kavling.
+      if (!world) return;
+      if (ringLoadTimer.current) clearTimeout(ringLoadTimer.current);
+      const wait = 3_000 + Math.random() * 2_000;
+      ringLoadTimer.current = setTimeout(() => {
+        ringLoadTimer.current = null;
+        if (!document.hidden) void loadRings(rings);
+      }, wait);
     },
-    [loadRings],
+    [loadRings, world],
   );
+
+  useEffect(() => () => {
+    if (ringLoadTimer.current) clearTimeout(ringLoadTimer.current);
+  }, []);
+
+  useEffect(() => {
+    if (modal !== 'ktp' || !session) return;
+    let cancelled = false;
+    const rings = Array.from({ length: Math.max(1, world?.currentRingUnlocked ?? 1) }, (_, i) => i + 1);
+    void api.getOwnedPlots(rings).then((plots) => {
+      if (!cancelled) setMyPlotCount(plots.filter((p) => p.ownerCitizenId === session.citizenId).length);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [modal, session, world?.currentRingUnlocked]);
 
   const onTap = useCallback(
     async (t: TapTarget) => {
@@ -507,6 +641,8 @@ export default function App() {
               enabled={!!me}
               lastSentAt={emotes.lastSentAt}
               onPick={emotes.send}
+              onOpen={emotes.connect}
+              onClose={emotes.disconnect}
               onLocked={() => toast('😆 Daftar jadi warga dulu untuk kirim emote ke peta!')}
               openSignal={emoteSignal}
             />
@@ -518,7 +654,12 @@ export default function App() {
         )}
 
         {loadError && (
-          <div className="absolute inset-x-3 top-40 rounded-2xl bg-red-600 p-3 text-sm font-semibold text-white shadow-lg">Gagal memuat data: {loadError}</div>
+          <div className="absolute inset-x-3 top-40 rounded-2xl bg-red-600 p-3 text-sm font-semibold text-white shadow-lg">
+            <div>Gagal memuat data: {loadError}</div>
+            <button type="button" className="mt-2 rounded-xl bg-white/20 px-3 py-1.5 font-black" onClick={() => void refreshWorld().then(refreshMap).then(refreshMe)}>
+              Muat Ulang
+            </button>
+          </div>
         )}
 
         {floatReward && (

@@ -42,7 +42,8 @@ export function useEmotes(me: MyCitizen | null, mapRef: RefObject<MapViewHandle 
     [mapRef],
   );
 
-  useEffect(() => {
+  const connect = useCallback(() => {
+    if (chanRef.current) return;
     preloadEmotes();
     const ch = api.joinEmotes((raw) => {
       // Payload broadcast tidak terautentikasi → validasi ketat di sisi penerima.
@@ -59,11 +60,20 @@ export function useEmotes(me: MyCitizen | null, mapRef: RefObject<MapViewHandle 
       display({ citizen_id: raw.citizen_id, seat_number: Math.floor(seat), display_name: name, emote_key: raw.emote_key, timestamp: now }, false);
     });
     chanRef.current = ch;
-    return () => {
-      ch.leave();
-      chanRef.current = null;
-    };
   }, [display]);
+
+  const disconnect = useCallback(() => {
+    chanRef.current?.leave();
+    chanRef.current = null;
+  }, []);
+
+  useEffect(() => () => {
+    disconnect();
+  }, [disconnect]);
+
+  useEffect(() => {
+    preloadEmotes();
+  }, []);
 
   const cooldownLeft = (now = Date.now()) => Math.max(0, lastSentAt + EMOTE_COOLDOWN_MS - now);
 
@@ -82,7 +92,7 @@ export function useEmotes(me: MyCitizen | null, mapRef: RefObject<MapViewHandle 
     [me, lastSentAt, display],
   );
 
-  return { send, floating, lastSentAt, cooldownLeft };
+  return { send, floating, lastSentAt, cooldownLeft, connect, disconnect };
 }
 
 /** Progress cooldown 0→1 (rAF) untuk ring tipis di tombol emote. */
@@ -107,12 +117,16 @@ export function EmotePicker({
   lastSentAt,
   onPick,
   onLocked,
+  onOpen,
+  onClose,
   openSignal = 0,
 }: {
   enabled: boolean;
   lastSentAt: number;
   onPick: (k: EmoteKey) => boolean;
   onLocked: () => void;
+  onOpen?: () => void;
+  onClose?: () => void;
   /** Naikkan angka ini untuk membuka picker dari luar (shortcut misi). */
   openSignal?: number;
 }) {
@@ -120,6 +134,10 @@ export function EmotePicker({
   useEffect(() => {
     if (openSignal > 0 && enabled) setOpen(true);
   }, [openSignal, enabled]);
+  useEffect(() => {
+    if (open) onOpen?.();
+    else onClose?.();
+  }, [open, onOpen, onClose]);
   const p = useCooldownProgress(lastSentAt);
   const cooling = p < 1;
   const wrapRef = useRef<HTMLDivElement>(null);

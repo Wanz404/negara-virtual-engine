@@ -16,36 +16,33 @@ function mergeById(a: ChatMessage[], b: ChatMessage[]): ChatMessage[] {
 }
 
 /**
- * State Global Chat: 50 pesan awal + Supabase Realtime (INSERT & UPDATE nama).
- * Channel dibersihkan saat unmount; refetch ringan saat tab kembali terlihat (koneksi bisa putus di background).
+ * State Global Chat: snapshot dimuat saat panel dibuka, lalu pesan baru ditambahkan dari Realtime.
+ * Channel dibersihkan begitu panel ditutup.
  */
-export function useGlobalChat() {
+export function useGlobalChat(enabled = false) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [ready, setReady] = useState(false);
 
   const add = useCallback((m: ChatMessage) => setMessages((list) => mergeById(list, [m])), []);
 
   useEffect(() => {
+    if (!enabled) return;
     let alive = true;
-    const load = () =>
-      api
-        .getGlobalChat(50)
-        .then((list) => alive && setMessages((prev) => mergeById(prev, list)))
-        .catch(() => undefined)
-        .finally(() => alive && setReady(true));
     const unsub = api.subscribeGlobalChat({
       onInsert: add,
       onUpdate: (m) => setMessages((list) => list.map((x) => (x.id === m.id ? { ...x, displayName: m.displayName } : x))),
     });
-    void load();
-    const onVis = () => document.visibilityState === 'visible' && void load();
-    document.addEventListener('visibilitychange', onVis);
+    // Cleanup berjalan segera saat modal ditutup agar kanal tidak menahan slot Realtime.
+    // Muat snapshot sekali saat panel chat dibuka. Realtime berikutnya hanya menambah/memperbarui pesan lokal.
+    void api.getGlobalChat(50)
+      .then((list) => alive && setMessages((prev) => mergeById(prev, list)))
+      .catch(() => undefined)
+      .finally(() => alive && setReady(true));
     return () => {
       alive = false;
       unsub();
-      document.removeEventListener('visibilitychange', onVis);
     };
-  }, [add]);
+  }, [enabled, add]);
 
   /** Sinkron lokal instan setelah ganti nama (server juga memperbarui baris & memancarkan UPDATE). */
   const renameLocal = useCallback((citizenId: string, name: string) => {

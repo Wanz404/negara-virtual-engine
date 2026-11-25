@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { WORLD } from '../configs';
 import {
   DEFAULT_PROPERTY_CATALOG,
@@ -109,16 +109,20 @@ export function EconomySheet({
   const status = me ? economyStatus(me, now) : null;
   const [catalog, setCatalog] = useState<PropertyType[]>([]);
   const [mine, setMine] = useState<string[]>([]);
+  const propsLoadedFor = useRef(new Set<string>());
 
   const loadProps = useCallback(async () => {
+    const key = me?.id ?? 'guest';
+    if (propsLoadedFor.current.has(key)) return;
     const cat = await api.getPropertyCatalog().catch(() => []);
     setCatalog(cat.length ? cat : api.mode === 'sandbox' ? DEFAULT_PROPERTY_CATALOG : []);
     if (me) setMine(await api.getMyProperties(me.id).catch(() => []));
+    propsLoadedFor.current.add(key);
   }, [me?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (open) void loadProps();
-  }, [open, loadProps]);
+    if (open && tab === 'properti') void loadProps();
+  }, [open, tab, loadProps]);
 
   const propertyBonus = useMemo(() => catalog.filter((t) => mine.includes(t.id)).reduce((s, t) => s + t.dailyBonus, 0), [catalog, mine]);
 
