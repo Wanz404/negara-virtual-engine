@@ -26,14 +26,15 @@ const PLOT_COLUMNS =
 const sbHeaders = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, Accept: 'application/json' };
 
 async function sb(path: string, init?: RequestInit): Promise<any> {
-  const res = await fetch(`${SUPABASE_URL}${path}`, { ...init, headers: { ...sbHeaders, ...(init?.headers ?? {}) }, signal: AbortSignal.timeout(28_000) });
+  const res = await fetch(`${SUPABASE_URL}${path}`, { ...init, headers: { ...sbHeaders, ...(init?.headers ?? {}) }, signal: AbortSignal.timeout(40_000) });
   if (!res.ok) throw new Error(`${path.split('?')[0]} → HTTP ${res.status}`);
   return res.json();
 }
 
 async function build(): Promise<Record<string, unknown>> {
   const w = encodeURIComponent(WORLD_ID);
-  const [worlds, citizens, news] = await Promise.all([
+  // Keempat query paralel (Supabase lambat → total waktu = query terlambat, bukan jumlahnya).
+  const [worlds, citizens, news, owned] = await Promise.all([
     sb(`/rest/v1/world_states?select=${WORLD_COLUMNS}&world_id=eq.${w}&limit=1`),
     sb('/rest/v1/rpc/get_map_citizens', {
       method: 'POST',
@@ -41,17 +42,18 @@ async function build(): Promise<Record<string, unknown>> {
       body: JSON.stringify({ p_world_id: WORLD_ID, p_me: null, p_limit: 120 }),
     }),
     sb(`/rest/v1/news_feed?select=id,category,message,citizen_id,created_at&world_id=eq.${w}&order=created_at.desc&limit=30`),
+    sb(`/rest/v1/land_plots?select=${PLOT_COLUMNS}&world_id=eq.${w}&owner_citizen_id=not.is.null`),
   ]);
   const world = Array.isArray(worlds) ? (worlds[0] ?? null) : null;
   if (!world) throw new Error('world_states kosong');
-  const rings = Array.from({ length: Math.max(1, Number(world.current_ring_unlocked) || 1) }, (_, i) => i + 1).join(',');
-  const plots = await sb(`/rest/v1/land_plots?select=${PLOT_COLUMNS}&world_id=eq.${w}&ring_level=in.(${rings})&owner_citizen_id=not.is.null`);
-  return { v: 1, generatedAt: new Date().toISOString(), world, citizens: citizens ?? [], news: news ?? [], plots: plots ?? [], plotRings: rings.split(',').map(Number) };
+  const plotRings = Array.from({ length: Math.max(1, Number(world.current_ring_unlocked) || 1) }, (_, i) => i + 1);
+  const plots = (Array.isArray(owned) ? owned : []).filter((p: any) => plotRings.includes(Number(p.ring_level)));
+  return { v: 1, generatedAt: new Date().toISOString(), world, citizens: citizens ?? [], news: news ?? [], plots, plotRings };
 }
 
 /** Salinan segar (10 dtk) + salinan cadangan (10 menit) + kunci refresh (20 dtk) di cache edge yang sama. */
 const STALE_TTL = 600;
-const LOCK_TTL = 30;
+const LOCK_TTL = 45;
 function cached(body: string, ttl: number): Response {
   return new Response(body, { headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': `public, max-age=${ttl}` } });
 }
@@ -87,7 +89,7 @@ export async function onRequestGet(ctx: Ctx): Promise<Response> {
   const stale = await cache.match(staleKey);
   if (stale) {
     // Supabase lambat tidak boleh membuat pengunjung menunggu: sajikan cadangan, perbarui di belakang layar
-    // (paling banyak 1 refresh per 30 dtk per lokasi edge berkat kunci di cache).
+    // (paling banyak 1 refresh per 45 dtk per lokasi edge berkat kunci di cache).
     if (!(await cache.match(lockKey))) {
       ctx.waitUntil(
         cache.put(lockKey, cached('1', LOCK_TTL)).then(() => refresh(cache, freshKey, staleKey)).catch(() => undefined),
@@ -96,7 +98,7 @@ export async function onRequestGet(ctx: Ctx): Promise<Response> {
     return client(await stale.text(), 'STALE');
   }
 
-  // Cache kosong total: hanya 1 request per 30 dtk per lokasi edge yang boleh membangun dari Supabase.
+  // Cache kosong total: hanya 1 request per 45 dtk per lokasi edge yang boleh membangun dari Supabase.
   // Sisanya dijawab 503 instan (frontend lalu fallback seperti biasa) — edge TIDAK PERNAH melipatgandakan query.
   if (await cache.match(lockKey)) return warming();
   await cache.put(lockKey, cached('1', LOCK_TTL));
