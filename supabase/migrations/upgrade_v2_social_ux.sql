@@ -68,7 +68,7 @@ END $$;
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.gchat_strip_invisible(p_text TEXT)
 RETURNS TEXT LANGUAGE sql IMMUTABLE AS $$
-  SELECT regexp_replace(coalesce(p_text, ''), '[​-‏‪-‮⁠-⁯﻿]', '', 'g')
+  SELECT regexp_replace(coalesce(p_text, ''), '[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]', '', 'g')
 $$;
 
 -- -----------------------------------------------------------------------------
