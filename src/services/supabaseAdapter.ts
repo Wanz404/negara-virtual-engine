@@ -76,7 +76,8 @@ export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapter
     if (snap && Date.now() - snap.at < SNAPSHOT_REUSE_MS) return Promise.resolve(snap.data);
     if (snapInflight) return snapInflight;
     const ctrl = new AbortController();
-    const timeout = setTimeout(() => ctrl.abort(), 8_000);
+    // Edge biasanya menjawab instan (HIT/STALE); hanya build pertama yang menunggu Supabase.
+    const timeout = setTimeout(() => ctrl.abort(), 15_000);
     snapInflight = fetch(opts.snapshotUrl, { signal: ctrl.signal, headers: { Accept: 'application/json' } })
       .then(async (res) => {
         if (!res.ok || !(res.headers.get('content-type') ?? '').includes('application/json')) throw new Error(`snapshot HTTP ${res.status}`);

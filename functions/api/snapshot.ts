@@ -26,7 +26,7 @@ const PLOT_COLUMNS =
 const sbHeaders = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, Accept: 'application/json' };
 
 async function sb(path: string, init?: RequestInit): Promise<any> {
-  const res = await fetch(`${SUPABASE_URL}${path}`, { ...init, headers: { ...sbHeaders, ...(init?.headers ?? {}) } });
+  const res = await fetch(`${SUPABASE_URL}${path}`, { ...init, headers: { ...sbHeaders, ...(init?.headers ?? {}) }, signal: AbortSignal.timeout(25_000) });
   if (!res.ok) throw new Error(`${path.split('?')[0]} → HTTP ${res.status}`);
   return res.json();
 }
@@ -49,29 +49,66 @@ async function build(): Promise<Record<string, unknown>> {
   return { v: 1, generatedAt: new Date().toISOString(), world, citizens: citizens ?? [], news: news ?? [], plots: plots ?? [], plotRings: rings.split(',').map(Number) };
 }
 
+/** Salinan segar (10 dtk) + salinan cadangan (10 menit) + kunci refresh (20 dtk) di cache edge yang sama. */
+const STALE_TTL = 600;
+const LOCK_TTL = 20;
+let inflight: Promise<string> | null = null;
+
+function cached(body: string, ttl: number): Response {
+  return new Response(body, { headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': `public, max-age=${ttl}` } });
+}
+
+function client(body: string, state: string): Response {
+  return new Response(body, {
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': `public, max-age=0, s-maxage=${EDGE_TTL}, stale-while-revalidate=${SWR}`,
+      'Access-Control-Allow-Origin': '*',
+      'X-Snapshot-Cache': state,
+    },
+  });
+}
+
+/** Satu build per isolate pada satu waktu; hasilnya ditulis ke salinan segar & cadangan. */
+function refresh(cache: Cache, freshKey: Request, staleKey: Request): Promise<string> {
+  if (!inflight) {
+    inflight = build()
+      .then(async (data) => {
+        const body = JSON.stringify(data);
+        await Promise.all([cache.put(freshKey, cached(body, EDGE_TTL)), cache.put(staleKey, cached(body, STALE_TTL))]);
+        return body;
+      })
+      .finally(() => {
+        inflight = null;
+      });
+  }
+  return inflight;
+}
+
 export async function onRequestGet(ctx: Ctx): Promise<Response> {
   const cache = (caches as unknown as { default: Cache }).default;
-  const key = new Request(new URL('/api/snapshot', ctx.request.url).toString(), { method: 'GET' });
+  const base = new URL('/api/snapshot', ctx.request.url);
+  const freshKey = new Request(base.toString());
+  const staleKey = new Request(`${base}?v=stale`);
+  const lockKey = new Request(`${base}?v=lock`);
 
-  const hit = await cache.match(key);
-  if (hit) {
-    const res = new Response(hit.body, hit);
-    res.headers.set('X-Snapshot-Cache', 'HIT');
-    return res;
+  const fresh = await cache.match(freshKey);
+  if (fresh) return client(await fresh.text(), 'HIT');
+
+  const stale = await cache.match(staleKey);
+  if (stale) {
+    // Supabase lambat tidak boleh membuat pengunjung menunggu: sajikan cadangan, perbarui di belakang layar
+    // (paling banyak 1 refresh per 20 dtk per lokasi edge berkat kunci di cache).
+    if (!(await cache.match(lockKey))) {
+      ctx.waitUntil(
+        cache.put(lockKey, cached('1', LOCK_TTL)).then(() => refresh(cache, freshKey, staleKey)).catch(() => undefined),
+      );
+    }
+    return client(await stale.text(), 'STALE');
   }
 
   try {
-    const body = JSON.stringify(await build());
-    const res = new Response(body, {
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Cache-Control': `public, max-age=0, s-maxage=${EDGE_TTL}, stale-while-revalidate=${SWR}`,
-        'Access-Control-Allow-Origin': '*',
-      },
-    });
-    ctx.waitUntil(cache.put(key, res.clone()));
-    res.headers.set('X-Snapshot-Cache', 'MISS');
-    return res;
+    return client(await refresh(cache, freshKey, staleKey), 'MISS');
   } catch (e) {
     return new Response(JSON.stringify({ error: String((e as Error).message ?? e) }), {
       status: 502,
