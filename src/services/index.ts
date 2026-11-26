@@ -1,7 +1,7 @@
 import { WORLD } from '../configs';
 import { createSandboxAdapter, type SandboxApi } from './sandboxAdapter';
 import { createSupabaseAdapter } from './supabaseAdapter';
-import type { NationApi, Session } from './types';
+import type { MyCitizen, NationApi, Session } from './types';
 
 const env = import.meta.env;
 const url = String(env.VITE_SUPABASE_URL ?? '').trim();
@@ -49,6 +49,41 @@ export function saveSession(session: Session | null): void {
     else localStorage.removeItem(SESSION_KEY);
   } catch {
     // storage diblokir (mode privat IG in-app browser) → sesi hanya bertahan selama tab terbuka
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Cache KTP lokal (stale-while-revalidate): KTP tampil instan saat buka/refresh,
+// data server disegarkan diam-diam di latar belakang.
+// ---------------------------------------------------------------------------
+
+const ME_CACHE_KEY = `nv:${WORLD.worldId}:${api.mode}:me`;
+
+export interface CachedMe {
+  me: MyCitizen;
+  /** Kapan data ini terakhir dikonfirmasi server (ms epoch). */
+  at: number;
+}
+
+export function loadCachedMe(citizenId: string | null | undefined): CachedMe | null {
+  if (!citizenId) return null;
+  try {
+    const raw = localStorage.getItem(ME_CACHE_KEY);
+    if (!raw) return null;
+    const c = JSON.parse(raw) as CachedMe;
+    // Hanya milik sesi yang sedang login (ganti akun di perangkat yang sama → cache lama diabaikan).
+    return c && c.me && c.me.id === citizenId && typeof c.at === 'number' ? c : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveCachedMe(me: MyCitizen | null, at = Date.now()): void {
+  try {
+    if (me) localStorage.setItem(ME_CACHE_KEY, JSON.stringify({ me, at } satisfies CachedMe));
+    else localStorage.removeItem(ME_CACHE_KEY);
+  } catch {
+    // storage diblokir → KTP tetap jalan, hanya tanpa cache instan
   }
 }
 

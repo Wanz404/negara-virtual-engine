@@ -9,7 +9,9 @@ import {
   devToolsEnabled,
   guestTag,
   isSandbox,
+  loadCachedMe,
   loadSession,
+  saveCachedMe,
   saveSession,
   type MyCitizen,
   type NewsItem,
@@ -51,8 +53,13 @@ const RING_STALE_MS = 5 * 60_000;
 const NO_MEMBERS: PresenceMember[] = [];
 
 const pollDelay = () => POLL_MIN_MS + Math.random() * POLL_JITTER_MS;
-/** Data pribadi (get_my_citizen) cukup jarang: tiap panggilan menyentuh baris citizens di database. */
-const mePollDelay = () => 5 * 60_000 + Math.random() * 60_000;
+/** KTP disegarkan diam-diam di latar belakang paling sering sekali tiap 2,5–3 menit. */
+const ME_REFRESH_MS = 150_000;
+const meRefreshDelay = () => ME_REFRESH_MS + Math.random() * 30_000;
+/** Belum punya KTP sama sekali & server sibuk: coba ulang 15–25 dtk acak, maksimal 2x, lalu berhenti (tombol manual). */
+const meRetryDelay = () => 15_000 + Math.random() * 10_000;
+const ME_MAX_AUTO_RETRIES = 2;
+const ME_MANUAL_COOLDOWN_MS = 5_000;
 
 type ModalName = 'register' | 'recover' | 'ktp' | 'status' | 'admin' | 'dev' | 'news' | 'leaderboard' | 'gov' | 'chat' | 'economy' | null;
 type Sheet = { type: 'plot'; code: string } | { type: 'citizen'; id: string } | { type: 'landmark'; id: string } | null;
@@ -74,7 +81,14 @@ export default function App() {
   const [citizens, setCitizens] = useState<PublicCitizen[]>([]);
   const members = NO_MEMBERS;
   const [session, setSession] = useState<Session | null>(loadSession);
-  const [me, setMe] = useState<MyCitizen | null>(null);
+  // KTP instan dari cache lokal (stale-while-revalidate) — tidak menunggu server saat buka/refresh.
+  const [me, setMe] = useState<MyCitizen | null>(() => loadCachedMe(loadSession()?.citizenId)?.me ?? null);
+  const meFetchedAt = useRef<number>(loadCachedMe(loadSession()?.citizenId)?.at ?? 0);
+  const meRef = useRef(me);
+  meRef.current = me;
+  /** Coba ulang otomatis habis & KTP belum pernah termuat → tunggu tombol manual. */
+  const [meStalled, setMeStalled] = useState(false);
+  const [meCooldownUntil, setMeCooldownUntil] = useState(0);
   const [myPlotCount, setMyPlotCount] = useState(0);
   const [ownedPlots, setOwnedPlots] = useState<Plot[]>([]);
   const [modal, setModal] = useState<ModalName>(() => (location.hash === '#admin' || (location.hash === '#studio' && !hasAdminSession()) ? 'admin' : null));
@@ -216,29 +230,39 @@ export default function App() {
     [publishPlots],
   );
 
+  /** 1 RPC ringan (get_my_citizen, baca saja). Gagal → diam: KTP lama tetap tampil, sesi TIDAK dihapus. */
   const refreshMe = useCallback((): Promise<boolean> => {
-    if (!session) {
-      setMe(null);
-      setMyPlotCount(0);
-      return Promise.resolve(true);
-    }
+    if (!session) return Promise.resolve(true);
     if (meRequest.current) return meRequest.current;
     const request = api.getMe(session).then((c) => {
       if (!c) {
+        // Hanya bila server tegas menyatakan token tidak valid (bukan karena sibuk/timeout).
         saveSession(null);
+        saveCachedMe(null);
         setSession(null);
         setMe(null);
         return true;
       }
+      meFetchedAt.current = Date.now();
       setMe(c);
+      setMeStalled(false);
       return true;
-    }).catch((e) => {
-      setLoadError(errorMessage(e));
-      return false;
-    }).finally(() => { meRequest.current = null; });
+    }).catch(() => false).finally(() => { meRequest.current = null; });
     meRequest.current = request;
     return request;
   }, [session]);
+
+  // Simpan snapshot KTP terbaru ke localStorage setiap kali berubah (login, refresh, kerja, edit profil, dst).
+  useEffect(() => {
+    if (me && session && me.id === session.citizenId) saveCachedMe(me, meFetchedAt.current || Date.now());
+  }, [me, session]);
+
+  const retryMeNow = useCallback(() => {
+    if (Date.now() < meCooldownUntil) return;
+    setMeCooldownUntil(Date.now() + ME_MANUAL_COOLDOWN_MS);
+    setTimeout(() => setMeCooldownUntil(0), ME_MANUAL_COOLDOWN_MS + 50);
+    void refreshMe();
+  }, [meCooldownUntil, refreshMe]);
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
@@ -287,27 +311,42 @@ export default function App() {
   }, [refreshMap, loadRings]);
 
   useEffect(() => {
+    if (!session) {
+      setMe(null);
+      setMyPlotCount(0);
+      return;
+    }
+    setMeStalled(false);
     let timer: ReturnType<typeof setTimeout>;
-    let failures = 0;
+    let retries = 0;
     let cancelled = false;
     const schedule = (delay: number) => {
-      if (cancelled) return;
-      timer = setTimeout(async () => {
-        if (cancelled) return;
-        if (document.hidden) return schedule(mePollDelay());
-        const ok = await refreshMe();
-        if (cancelled) return;
-        failures = ok ? 0 : failures + 1;
-        schedule(ok ? mePollDelay() : Math.min(120_000, 30_000 * 2 ** Math.min(failures - 1, 2)));
-      }, delay);
+      if (!cancelled) timer = setTimeout(run, delay);
     };
-    void refreshMe().then((ok) => {
+    const run = async () => {
       if (cancelled) return;
-      failures = ok ? 0 : 1;
-      schedule(ok ? mePollDelay() : 30_000);
-    });
+      if (document.hidden) return schedule(meRefreshDelay());
+      const ok = await refreshMe();
+      if (cancelled) return;
+      if (ok) {
+        retries = 0;
+        return schedule(meRefreshDelay());
+      }
+      // Sudah ada KTP (cache) → gagal didiamkan, coba lagi di jadwal normal berikutnya.
+      if (meRef.current) return schedule(meRefreshDelay());
+      // Belum ada KTP sama sekali → maksimal 2x coba ulang berjitter, lalu berhenti total.
+      if (retries < ME_MAX_AUTO_RETRIES) {
+        retries += 1;
+        return schedule(meRetryDelay());
+      }
+      setMeStalled(true);
+    };
+    const age = Date.now() - meFetchedAt.current;
+    if (!meRef.current) schedule(0);
+    else if (age < ME_REFRESH_MS) schedule(ME_REFRESH_MS - age + Math.random() * 30_000);
+    else schedule(1_000 + Math.random() * 4_000); // cache basi: segarkan di latar belakang, tersebar acak
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [refreshMe]);
+  }, [session, refreshMe]);
 
   // Feed sekunder dimuat sekali setelah peta siap; pembukaan panel menyegarkan cache yang sudah lama.
   useEffect(() => {
@@ -339,7 +378,8 @@ export default function App() {
       if (document.hidden) return;
       if (Date.now() - lastFocusRefresh < POLL_MIN_MS) return;
       lastFocusRefresh = Date.now();
-      void refreshMe();
+      // KTP: hormati batas 1x / 2,5 menit (tab dipindah-pindah tidak boleh menembak Supabase).
+      if (meRef.current && Date.now() - meFetchedAt.current >= ME_REFRESH_MS) void refreshMe();
       void refreshWorld();
     };
     const onHash = () => {
@@ -478,6 +518,7 @@ export default function App() {
   // ---------------------------------------------------------------------------
   function onRegistered(r: RegisterResult) {
     saveSession(r.session);
+    meFetchedAt.current = Date.now();
     setSession(r.session);
     setMe(r.citizen);
     setMyPlotCount(0);
@@ -487,8 +528,12 @@ export default function App() {
     void refreshMap();
   }
 
-  function onRecovered(s: Session, pinCreated = false) {
+  function onRecovered(s: Session, pinCreated = false, citizen: MyCitizen | null = null) {
     saveSession(s);
+    // Server (007) mengembalikan data KTP bersama token → KTP langsung tampil tanpa request kedua.
+    const cached = citizen ? null : loadCachedMe(s.citizenId);
+    meFetchedAt.current = citizen ? Date.now() : (cached?.at ?? 0);
+    setMe(citizen ?? cached?.me ?? null);
     setSession(s);
     setModal(null);
     toast(pinCreated ? 'PIN dibuat & KTP-mu aman. Selamat datang kembali!' : 'Selamat datang kembali!', 'success');
@@ -496,6 +541,8 @@ export default function App() {
 
   function logout() {
     saveSession(null);
+    saveCachedMe(null);
+    meFetchedAt.current = 0;
     setSession(null);
     setMe(null);
     setModal(null);
@@ -710,10 +757,14 @@ export default function App() {
           // Sesi tersimpan tapi data warga belum termuat (server lambat): JANGAN tampilkan tombol daftar,
           // supaya warga tidak mengira akunnya hilang lalu mendaftar ulang. Sesi lokal tetap utuh.
           <div className="space-y-2 rounded-2xl bg-black/5 p-3 text-center">
-            <div className="text-sm font-bold">⏳ Memuat KTP-mu…</div>
-            <div className="text-[11px] text-muted">Server sedang sibuk. Kamu tetap login — dicoba ulang otomatis.</div>
-            <Button variant="secondary" className="w-full text-xs" onClick={() => void refreshMe()}>
-              🔄 Coba lagi sekarang
+            <div className="text-sm font-bold">{meStalled ? '🪪 KTP-mu aman' : '⏳ Memuat KTP-mu…'}</div>
+            <div className="text-[11px] text-muted">
+              {meStalled
+                ? 'Server sedang sibuk. Kamu tetap login — tekan tombol di bawah untuk memuat ulang.'
+                : 'Sebentar ya. Kamu tetap login.'}
+            </div>
+            <Button variant="secondary" className="w-full text-xs" disabled={now < meCooldownUntil} onClick={retryMeNow}>
+              {now < meCooldownUntil ? `⏳ Tunggu ${Math.ceil((meCooldownUntil - now) / 1000)} dtk` : '🔄 Coba lagi sekarang'}
             </Button>
           </div>
         ) : (

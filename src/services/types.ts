@@ -326,11 +326,12 @@ export interface NationApi {
   // --- Pendaftaran & sesi ---
   register(input: RegisterInput): Promise<RegisterResult>;
   getMe(session: Session): Promise<MyCitizen | null>;
-  recoverSession(ktpCode: string, pin: string): Promise<Session>;
+  /** citizen: data KTP ikut dikembalikan server (007) → tidak perlu request get_my_citizen kedua. */
+  recoverSession(ktpCode: string, pin: string): Promise<Session & { citizen?: MyCitizen | null }>;
   /** Masuk Cepat langkah 1: status akun dari username (IG username / nama tampilan). */
   quickLoginCheck(username: string): Promise<QuickLoginCheck>;
   /** Masuk Cepat langkah 2: cocokkan PIN, atau buat PIN baru bila akun belum punya. */
-  quickLogin(username: string, pin: string): Promise<{ session: Session; pinCreated: boolean }>;
+  quickLogin(username: string, pin: string): Promise<{ session: Session; pinCreated: boolean; citizen?: MyCitizen | null }>;
   setRecoveryPin(session: Session, pin: string): Promise<void>;
 
   // --- Verifikasi follow (warga) ---

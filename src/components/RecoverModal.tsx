@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { WORLD } from '../configs';
-import { BUSY_MESSAGE, api, normalizeLoginUsername, type QuickLoginCheck, type Session } from '../services';
+import { BUSY_MESSAGE, api, normalizeLoginUsername, type MyCitizen, type QuickLoginCheck, type Session } from '../services';
 import { Button, Field, Modal, errorMessage, inputClass } from './ui';
 
 type Tab = 'username' | 'ktp';
@@ -19,7 +19,7 @@ const pinInput = (value: string, set: (v: string) => void, autoComplete: string)
 );
 
 /** Masuk KTP: (1) Username → PIN / buat PIN baru, atau (2) Kode KTP + PIN. */
-export function RecoverModal({ open, onClose, onRecovered }: { open: boolean; onClose: () => void; onRecovered: (s: Session, pinCreated?: boolean) => void }) {
+export function RecoverModal({ open, onClose, onRecovered }: { open: boolean; onClose: () => void; onRecovered: (s: Session, pinCreated?: boolean, citizen?: MyCitizen | null) => void }) {
   const [tab, setTab] = useState<Tab>('username');
   const [username, setUsername] = useState('');
   const [check, setCheck] = useState<QuickLoginCheck | null>(null);
@@ -49,13 +49,13 @@ export function RecoverModal({ open, onClose, onRecovered }: { open: boolean; on
     }
   }
 
-  const done = (s: Session, pinCreated = false) => {
+  const done = (s: Session, pinCreated = false, citizen: MyCitizen | null = null) => {
     setUsername('');
     setKtp('');
     setPin('');
     setPin2('');
     setCheck(null);
-    onRecovered(s, pinCreated);
+    onRecovered(s, pinCreated, citizen);
   };
 
   const checkUsername = (e: React.FormEvent) => {
@@ -73,13 +73,16 @@ export function RecoverModal({ open, onClose, onRecovered }: { open: boolean; on
     if (check?.status === 'needs_pin_setup' && pin !== pin2) return setError('Konfirmasi PIN tidak sama.');
     void run(async () => {
       const r = await api.quickLogin(username, pin);
-      done(r.session, r.pinCreated);
+      done(r.session, r.pinCreated, r.citizen ?? null);
     });
   };
 
   const submitKtp = (e: React.FormEvent) => {
     e.preventDefault();
-    void run(async () => done(await api.recoverSession(ktp.trim(), pin)));
+    void run(async () => {
+      const { citizen, ...s } = await api.recoverSession(ktp.trim(), pin);
+      done(s, false, citizen ?? null);
+    });
   };
 
   /** Server padat/timeout → tombol yang sama berubah jadi "Coba Lagi" (isian & sesi lokal tetap). */

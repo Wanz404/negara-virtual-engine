@@ -281,7 +281,7 @@ export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapter
 
     async recoverSession(ktpCode, pin) {
       const r = await rpc('recover_session', { p_world_id: W, p_ktp_code: ktpCode, p_pin: pin });
-      return { citizenId: r.citizen_id, token: r.secret_token };
+      return { citizenId: r.citizen_id, token: r.secret_token, citizen: r.citizen ? mapMyCitizen(r.citizen) : null };
     },
 
     async quickLoginCheck(username) {
@@ -291,7 +291,11 @@ export function createSupabaseAdapter(config: WorldConfig, opts: SupabaseAdapter
 
     async quickLogin(username, pin) {
       const r = await rpc('quick_login', { p_world_id: W, p_username: normalizeLoginUsername(username), p_pin: pin });
-      return { session: { citizenId: r.citizen_id, token: r.secret_token }, pinCreated: Boolean(r.pin_created) };
+      return {
+        session: { citizenId: r.citizen_id, token: r.secret_token },
+        pinCreated: Boolean(r.pin_created),
+        citizen: r.citizen ? mapMyCitizen(r.citizen) : null,
+      };
     },
 
     async setRecoveryPin(session, pin) {
