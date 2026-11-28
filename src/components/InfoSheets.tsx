@@ -114,8 +114,9 @@ export function LandmarkSheet({
   }, [lm?.kind, project]);
 
   if (!lm) return null;
-  const president = citizens.find((c) => c.citizenNumber === 1);
-  const vice = citizens.find((c) => c.citizenNumber === 2);
+  // Jabatan dibaca dari tier_id di database (bukan nomor kursi): Wapres kini #2552, bukan #0002.
+  const president = citizens.find((c) => c.tierId === 'head') ?? citizens.find((c) => c.citizenNumber === 1);
+  const vice = citizens.find((c) => c.tierId === 'deputy');
   const pct = world && world.activeProjectGoal > 0 ? Math.min(100, (world.activeProjectFunding / world.activeProjectGoal) * 100) : 0;
   const canDonate = isInaugurated(me) && !world?.activeProjectCompleted;
 
@@ -125,8 +126,12 @@ export function LandmarkSheet({
         <div className="space-y-2 text-sm">
           <div className="rounded-2xl bg-amber-50 p-3">
             <div className="text-xs font-bold text-amber-800 uppercase">{WORLD.tiers[0].name}</div>
-            <div className="text-lg font-black">{president ? `${president.username} | 001` : 'Kursi #001 masih kosong — daftar sekarang!'}</div>
-            {vice && <div className="text-xs text-muted">Didampingi {vice.username} | 002</div>}
+            <div className="text-lg font-black">{president ? `${president.username} | ${String(president.citizenNumber).padStart(3, '0')}` : 'Kursi #001 masih kosong — daftar sekarang!'}</div>
+            {vice && (
+              <div className="text-xs text-muted">
+                Didampingi {WORLD.tiers[1]?.name ?? 'Wapres'} {vice.username} | {String(vice.citizenNumber).padStart(4, '0')}
+              </div>
+            )}
           </div>
           {world?.presidentAnnouncement && (
             <div className="rounded-2xl bg-black/5 p-3">

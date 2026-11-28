@@ -1,6 +1,7 @@
 import type { WorldTheme } from '../../configs/types';
 import type { Rect } from '../geometry';
 import { drawEmoji, shade } from '../sprites';
+import { INAUGURATED_LABEL } from '../../lib/inauguration';
 
 type Ctx = CanvasRenderingContext2D;
 
@@ -445,7 +446,7 @@ export function drawTrainLoop(ctx: Ctx, half: number, t: number, color: string):
 
 /**
  * Hiasan Pelantikan Gelombang 1 di Alun-Alun Tugu: umbul-umbul merah-putih melingkar, panggung mini
- * dengan spanduk "5.531 WARGA RESMI DILANTIK" + dua bendera. Murni gambar (tidak ada hit-area baru).
+ * dengan spanduk "<INAUGURATED_LABEL> WARGA RESMI DILANTIK" + dua bendera. Murni gambar (tidak ada hit-area baru).
  */
 export function drawInaugurationDecor(ctx: Ctx, r: Rect, t: number): void {
   const cx = r.x + r.w / 2;
@@ -513,7 +514,7 @@ export function drawInaugurationDecor(ctx: Ctx, r: Rect, t: number): void {
   ctx.font = `900 ${Math.max(6, Math.min(8.5, sw / 17))}px ui-sans-serif, system-ui, sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('5.531 WARGA RESMI DILANTIK', cx, by + bh / 2 + 0.5, sw - 14);
+  ctx.fillText(`${INAUGURATED_LABEL} WARGA RESMI DILANTIK`, cx, by + bh / 2 + 0.5, sw - 14);
   ctx.restore();
   // bendera di kedua ujung panggung
   flag(ctx, sx + 2, sy + 10, t, 30);

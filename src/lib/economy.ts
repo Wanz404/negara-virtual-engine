@@ -23,11 +23,14 @@ export const QUICK_WORK_LABELS = [
   'Bikin Konten FYP',
 ];
 
-/** Bonus gaji jabatan: RI-1/RI-2 +40, Kabinet +25, Elite (#31–#100) +15. */
-export function rankSalaryBonus(seat: number): number {
-  if (seat <= 2) return 40;
-  if (seat <= 30) return 25;
-  if (seat <= 100) return 15;
+/**
+ * Bonus gaji jabatan dari tier di database (bukan nomor kursi): RI-1/RI-2 +40, Kabinet +25, DPR & Naga +15.
+ * Cermin nv_rank_salary_bonus_tier di Supabase (migrasi 008).
+ */
+export function rankSalaryBonus(tierId: string): number {
+  if (tierId === 'head' || tierId === 'deputy') return 40;
+  if (tierId === 'cabinet') return 25;
+  if (tierId === 'council' || tierId === 'elite') return 15;
   return 0;
 }
 

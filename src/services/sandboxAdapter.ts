@@ -1383,7 +1383,7 @@ export function createSandboxAdapter(config: WorldConfig): SandboxApi {
         const c = auth(db, session);
         const next = c.lastSalaryAt ? new Date(c.lastSalaryAt).getTime() + SALARY_COOLDOWN_MS : 0;
         if (next > Date.now()) fail(`Gaji hari ini sudah diambil. Tersedia lagi dalam ${formatDuration(next - Date.now())}.`);
-        const rank = rankSalaryBonus(c.citizenNumber);
+        const rank = rankSalaryBonus(c.tierId);
         const prop = propertyBonus(c.id);
         const reward = SALARY_BASE + rank + prop;
         c.coins += reward;

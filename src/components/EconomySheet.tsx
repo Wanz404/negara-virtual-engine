@@ -357,7 +357,7 @@ function WorkTab({
 }) {
   const [salaryBusy, setSalaryBusy] = useState(false);
   const [shift, setShift] = useState<{ label: string; start: number } | null>(null);
-  const rank = rankSalaryBonus(me.citizenNumber);
+  const rank = rankSalaryBonus(me.tierId);
   const salaryTotal = SALARY_BASE + rank + propertyBonus;
 
   async function claimSalary() {

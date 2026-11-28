@@ -57,7 +57,14 @@ export function saveSession(session: Session | null): void {
 // data server disegarkan diam-diam di latar belakang.
 // ---------------------------------------------------------------------------
 
-const ME_CACHE_KEY = `nv:${WORLD.worldId}:${api.mode}:me`;
+// v2 (28-11-2026): serah terima Wapres #0002 → #2552 + Pelantikan Gelombang 3 → abaikan KTP cache lama
+// agar jabatan & status pelantikan baru langsung tampil. Sesi login TIDAK disentuh (kunci terpisah).
+const ME_CACHE_KEY = `nv:${WORLD.worldId}:${api.mode}:me:v2`;
+try {
+  localStorage.removeItem(`nv:${WORLD.worldId}:${api.mode}:me`);
+} catch {
+  // storage diblokir
+}
 
 export interface CachedMe {
   me: MyCitizen;

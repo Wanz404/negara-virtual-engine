@@ -27,6 +27,14 @@ const STYLE = {
     glow: '0 6px 22px #10b98155',
     icon: '🎖️',
   },
+  wave3: {
+    frame: 'linear-gradient(135deg, #eff6ff, #60a5fa 35%, #fde68a 60%, #1e3a8a)',
+    body: 'linear-gradient(180deg, #0c1d4a, #050d26)',
+    title: 'linear-gradient(180deg, #ffffff, #bfdbfe 55%, #fde68a)',
+    sub: '#bfdbfe',
+    glow: '0 6px 22px #3b82f666',
+    icon: '🎖️',
+  },
 } as const;
 
 /** Stempel/badge status pelantikan di E-KTP — dihitung dari nomor warga saja. */

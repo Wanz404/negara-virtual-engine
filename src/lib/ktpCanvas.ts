@@ -479,13 +479,13 @@ export function renderKtpCanvas(me: MyCitizen, ownedPlots: number): HTMLCanvasEl
     g.shadowColor = gold ? '#f5c542aa' : 'rgba(0,0,0,0.45)';
     g.shadowBlur = 36;
     const frame = g.createLinearGradient(bx, by, bx + bw, by + bh);
-    const stops = gold ? ['#fff3c4', '#c8901c', '#fde68a', '#8a5a0b'] : inaug.tier === 'queue' ? ['#f8fafc', '#93c5fd', '#e2e8f0', '#3b82f6'] : ['#ecfdf5', '#34d399', '#a7f3d0', '#065f46'];
+    const stops = gold ? ['#fff3c4', '#c8901c', '#fde68a', '#8a5a0b'] : inaug.tier === 'queue' ? ['#f8fafc', '#93c5fd', '#e2e8f0', '#3b82f6'] : inaug.tier === 'wave3' ? ['#eff6ff', '#60a5fa', '#fde68a', '#1e3a8a'] : ['#ecfdf5', '#34d399', '#a7f3d0', '#065f46'];
     stops.forEach((c, i) => frame.addColorStop(i / (stops.length - 1), c));
     g.fillStyle = frame;
     rr(g, bx, by, bw, bh, 26);
     g.fill();
     g.restore();
-    g.fillStyle = gold ? '#2a1203' : inaug.tier === 'queue' ? '#0b1b3a' : '#052e1f';
+    g.fillStyle = gold ? '#2a1203' : inaug.tier === 'queue' ? '#0b1b3a' : inaug.tier === 'wave3' ? '#0c1d4a' : '#052e1f';
     rr(g, bx + 6, by + 6, bw - 12, bh - 12, 21);
     g.fill();
     g.textAlign = 'center';

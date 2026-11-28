@@ -68,7 +68,7 @@ export function KtpModal({
   useEffect(() => setPreview(null), [me.username, me.avatarColor, me.avatarStyle?.accessory, me.topProperty]);
   const inInstagram = typeof navigator !== 'undefined' && /Instagram|FBAN|FBAV/i.test(navigator.userAgent);
 
-  // Konfeti emas: warga resmi dilantik (Perintis #0001–#1000 & Gelombang 2), sekali per perangkat saat pertama buka E-KTP.
+  // Konfeti emas: warga resmi dilantik (Perintis #0001–#1000, Gelombang 2 & 3), sekali per perangkat saat pertama buka E-KTP.
   const [confetti, setConfetti] = useState(false);
   useEffect(() => {
     if (open && isInaugurated(me) && inaugurationBadge(me.citizenNumber, me.followStatus)?.tier !== 'queue' && takeConfettiTicket()) setConfetti(true);

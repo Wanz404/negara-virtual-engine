@@ -221,7 +221,8 @@ export default defineWorld({
     { id: 'gerbang', kind: 'gate', name: 'Gerbang Konoha & Pangkalan Ojol', emoji: '🛵' },
     { id: 'proyek', kind: 'project_site', name: 'Zona Proyek Nasional', emoji: '🚧' },
   ],
-  // Pelantikan massal 5.531 warga pertama (#0001–#5535; #3347, #4185, #4335, #4347 kosong). Lihat migrasi 005.
-  economy: { inauguratedUpto: 5535 },
+  // Pelantikan massal: Perintis #0001–#1000, Gelombang 2 #1001–#5535 (migrasi 005), Gelombang 3 #5536–#8684 (migrasi 008).
+  // Total 8.680 warga resmi dilantik (28-11-2026). Di atas #8684 = antrean Gelombang 4.
+  economy: { inauguratedUpto: 8684 },
   registration: { softGateFollow: false },
 });
